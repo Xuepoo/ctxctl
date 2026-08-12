@@ -1,0 +1,483 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse version
+        id: parse
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a valid semver tag (vX.Y.Z)"
+            exit 1
+          fi
+          CARGO_VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Tag version '$VERSION' does not match Cargo.toml version '$CARGO_VERSION'"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-binaries:
+    name: Binary (${{ matrix.target }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            os_name: linux
+            arch: amd64
+            artifact_name: ctxctl-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            os_name: linux
+            arch: arm64
+            artifact_name: ctxctl-aarch64-unknown-linux-gnu
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            os_name: macos
+            arch: amd64
+            artifact_name: ctxctl-x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            os_name: macos
+            arch: arm64
+            artifact_name: ctxctl-aarch64-apple-darwin
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            os_name: windows
+            arch: amd64
+            artifact_name: ctxctl-x86_64-pc-windows-msvc.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      
+      - name: Rename artifact (Linux/macOS)
+        if: matrix.os_name != 'windows'
+        run: mv target/${{ matrix.target }}/release/ctxctl ${{ matrix.artifact_name }}
+
+      - name: Rename artifact (Windows)
+        if: matrix.os_name == 'windows'
+        run: move target\${{ matrix.target }}\release\ctxctl.exe ${{ matrix.artifact_name }}
+
+      - name: Package for Linux distributions (nfpm)
+        if: matrix.os_name == 'linux'
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            NFPM_ARCH="arm64"
+            PKG_ARCH="aarch64"
+          else
+            NFPM_ARCH="x86_64"
+            PKG_ARCH="x86_64"
+          fi
+          curl -sL https://github.com/goreleaser/nfpm/releases/download/v2.37.1/nfpm_2.37.1_Linux_${NFPM_ARCH}.tar.gz | tar xz nfpm
+          sed -i "s/amd64/${NFPM_ARCH}/g" nfpm.yaml
+          sed -i "s/ctxctl-linux-x86_64/${{ matrix.artifact_name }}/g" nfpm.yaml
+          ./nfpm pkg --packager deb --target ctxctl-linux-${PKG_ARCH}.deb
+          ./nfpm pkg --packager rpm --target ctxctl-linux-${PKG_ARCH}.rpm
+          ./nfpm pkg --packager apk --target ctxctl-linux-${PKG_ARCH}.apk
+          ./nfpm pkg --packager archlinux --target ctxctl-linux-${PKG_ARCH}.pkg.tar.zst
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ctxctl-${{ matrix.target }}
+          path: |
+            ${{ matrix.artifact_name }}
+            *.deb
+            *.rpm
+            *.apk
+            *.pkg.tar.zst
+          if-no-files-found: warn
+
+  publish-cratesio:
+    name: Publish crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked || echo "crates.io publish skipped (version may already exist)"
+
+  publish-npm:
+    name: Publish npm (${{ matrix.target }})
+    needs: [verify, build-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download binary
+        uses: actions/download-artifact@v8
+        with:
+          name: ctxctl-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/
+      - name: Package platform npm
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          # Map each Rust target to both its npm platform suffix and the
+          # renamed artifact uploaded by build-binaries.
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu)
+              NPM_TARGET="linux-x64-gnu"; OS='["linux"]'; CPU='["x64"]'; LIBC='["glibc"]'
+              ARTIFACT_FILE="ctxctl-x86_64-unknown-linux-gnu"; NPM_BINARY="ctxctl"
+              ;;
+            aarch64-unknown-linux-gnu)
+              NPM_TARGET="linux-arm64-gnu"; OS='["linux"]'; CPU='["arm64"]'; LIBC='["glibc"]'
+              ARTIFACT_FILE="ctxctl-aarch64-unknown-linux-gnu"; NPM_BINARY="ctxctl"
+              ;;
+            x86_64-apple-darwin)
+              NPM_TARGET="darwin-x64"; OS='["darwin"]'; CPU='["x64"]'; LIBC=""
+              ARTIFACT_FILE="ctxctl-x86_64-apple-darwin"; NPM_BINARY="ctxctl"
+              ;;
+            aarch64-apple-darwin)
+              NPM_TARGET="darwin-arm64"; OS='["darwin"]'; CPU='["arm64"]'; LIBC=""
+              ARTIFACT_FILE="ctxctl-aarch64-apple-darwin"; NPM_BINARY="ctxctl"
+              ;;
+            x86_64-pc-windows-msvc)
+              NPM_TARGET="windows-x64"; OS='["win32"]'; CPU='["x64"]'; LIBC=""
+              ARTIFACT_FILE="ctxctl-x86_64-pc-windows-msvc.exe"; NPM_BINARY="ctxctl.exe"
+              ;;
+            *) echo "Unknown target: $TARGET"; exit 1 ;;
+          esac
+
+          ARTIFACT_PATH="target/$TARGET/release/$ARTIFACT_FILE"
+          if [ ! -s "$ARTIFACT_PATH" ]; then
+            echo "::error::Downloaded artifact is missing or empty: $ARTIFACT_PATH"
+            exit 1
+          fi
+
+          PLATFORM_DIR="npm/ctxctl-cli-${NPM_TARGET}"
+          mkdir -p "$PLATFORM_DIR/bin"
+          cp "$ARTIFACT_PATH" "$PLATFORM_DIR/bin/$NPM_BINARY"
+          chmod +x "$PLATFORM_DIR/bin/$NPM_BINARY" 2>/dev/null || true
+
+          LIBC_FIELD=""
+          [ -n "$LIBC" ] && LIBC_FIELD=',"libc":'$LIBC
+
+          cat > "$PLATFORM_DIR/package.json" <<- PKG_EOF
+          {
+            "name": "ctxctl-cli-${NPM_TARGET}",
+            "version": "${VERSION}",
+            "description": "CtxCtl CLI binary for ${TARGET}",
+            "os": $OS,
+            "cpu": $CPU$LIBC_FIELD,
+            "files": ["bin/"]
+          }
+          PKG_EOF
+
+          test -s "$PLATFORM_DIR/bin/$NPM_BINARY"
+          PACK_REPORT="$(mktemp)"
+          (cd "$PLATFORM_DIR" && npm pack --dry-run --json) > "$PACK_REPORT"
+          node -e '
+            const fs = require("fs");
+            const [report, expected] = process.argv.slice(1);
+            const parsed = JSON.parse(fs.readFileSync(report, "utf8"));
+            const result = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+            if (!result?.files?.some((file) => file.path === expected)) {
+              console.error(`::error::npm tarball is missing ${expected}`);
+              process.exit(1);
+            }
+          ' "$PACK_REPORT" "bin/$NPM_BINARY"
+          rm "$PACK_REPORT"
+          echo "NPM_TARGET=${NPM_TARGET}" >> "$GITHUB_ENV"
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          cd "npm/ctxctl-cli-${NPM_TARGET}"
+          npm publish --access public || {
+            code=$?
+            npm view "ctxctl-cli-${NPM_TARGET}@${VERSION}" version >/dev/null 2>&1 && {
+              echo "Version ${VERSION} already published, skipping."
+              exit 0
+            }
+            exit "$code"
+          }
+
+  publish-npm-root:
+    name: Publish npm (root)
+    needs: [verify, publish-npm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create root package
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          mkdir -p npm/ctxctl/bin
+          cat > npm/ctxctl/package.json <<- PKG_EOF
+          {
+            "name": "ctxctl",
+            "version": "${VERSION}",
+            "description": "Local-first memory for coding agents",
+            "bin": { "ctxctl": "bin/ctxctl.js" },
+            "optionalDependencies": {
+              "ctxctl-cli-linux-x64-gnu": "${VERSION}",
+              "ctxctl-cli-linux-arm64-gnu": "${VERSION}",
+              "ctxctl-cli-darwin-x64": "${VERSION}",
+              "ctxctl-cli-darwin-arm64": "${VERSION}",
+              "ctxctl-cli-windows-x64": "${VERSION}"
+            }
+          }
+          PKG_EOF
+
+          cat > npm/ctxctl/bin/ctxctl.js << 'LAUNCHER'
+          #!/usr/bin/env node
+          const { spawnSync } = require('child_process');
+          const { platform, arch } = process;
+          const osMap = { win32: 'win32', darwin: 'darwin', linux: 'linux' };
+          const archMap = { x64: 'x64', arm64: 'arm64' };
+          const pn = osMap[platform] || platform;
+          const an = archMap[arch] || arch;
+          const target = platform === 'linux' ? `${pn}-${an}-gnu` : `${pn}-${an}`;
+          const packageTarget = platform === 'win32' ? 'windows-x64' : target;
+          const binary = platform === 'win32' ? 'ctxctl.exe' : 'ctxctl';
+          try {
+            const binPath = require.resolve(`ctxctl-cli-${packageTarget}/bin/${binary}`);
+            const result = spawnSync(binPath, process.argv.slice(2), { stdio: 'inherit' });
+            if (result.error) throw result.error;
+            process.exit(result.status ?? 1);
+          } catch (e) {
+            console.error(`CtxCtl: no binary found for ${target}`);
+            console.error('Install from crates.io, npm (platform package), or GitHub Releases.');
+            process.exit(1);
+          }
+          LAUNCHER
+          chmod +x npm/ctxctl/bin/ctxctl.js
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          cd npm/ctxctl
+          npm publish --access public || {
+            code=$?
+            npm view "ctxctl@${VERSION}" version >/dev/null 2>&1 && {
+              echo "Version ${VERSION} already published, skipping."
+              exit 0
+            }
+            exit "$code"
+          }
+      - name: Verify npm installation
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          TEST_DIR="$(mktemp -d)"
+          cd "$TEST_DIR"
+          npm init --yes >/dev/null
+          for attempt in 1 2 3 4 5; do
+            npm install --save-dev "ctxctl@${VERSION}" && break
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::ctxctl@${VERSION} was not installable after publication"
+              exit 1
+            fi
+            sleep 5
+          done
+          INSTALLED_VERSION="$(./node_modules/.bin/ctxctl --version)"
+          case "$INSTALLED_VERSION" in
+            *"$VERSION"*) ;;
+            *)
+              echo "::error::Installed CLI reported '$INSTALLED_VERSION', expected $VERSION"
+              exit 1
+              ;;
+          esac
+
+  create-release:
+    name: GitHub Release
+    needs: [verify, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ctxctl-*
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ctxctl-x86_64-unknown-linux-gnu
+            ctxctl-aarch64-unknown-linux-gnu
+            ctxctl-x86_64-apple-darwin
+            ctxctl-aarch64-apple-darwin
+            ctxctl-x86_64-pc-windows-msvc.exe
+            *.deb
+            *.rpm
+            *.apk
+            *.pkg.tar.zst
+          name: v${{ needs.verify.outputs.version }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-homebrew:
+    name: Publish Homebrew
+    needs: [verify, build-binaries]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Linux and macOS binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ctxctl-*
+          merge-multiple: true
+      - name: Compute SHA256 and update formula
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          sum_linux_x64=$(sha256sum ctxctl-x86_64-unknown-linux-gnu | cut -d' ' -f1)
+          sum_macos_x64=$(sha256sum ctxctl-x86_64-apple-darwin | cut -d' ' -f1)
+          sum_macos_arm64=$(sha256sum ctxctl-aarch64-apple-darwin | cut -d' ' -f1)
+
+          cat > ctxctl.rb <<- RBEOF
+          class Carryctx < Formula
+            desc "Local-first memory for coding agents"
+            homepage "https://ctxctl.dev"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/Xuepoo/ctxctl/releases/download/v${VERSION}/ctxctl-aarch64-apple-darwin"
+                sha256 "${sum_macos_arm64}"
+              else
+                url "https://github.com/Xuepoo/ctxctl/releases/download/v${VERSION}/ctxctl-x86_64-apple-darwin"
+                sha256 "${sum_macos_x64}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/Xuepoo/ctxctl/releases/download/v${VERSION}/ctxctl-x86_64-unknown-linux-gnu"
+              sha256 "${sum_linux_x64}"
+            end
+
+            def install
+              if OS.mac?
+                if Hardware::CPU.arm?
+                  bin.install "ctxctl-aarch64-apple-darwin" => "ctxctl"
+                else
+                  bin.install "ctxctl-x86_64-apple-darwin" => "ctxctl"
+                end
+              elsif OS.linux?
+                bin.install "ctxctl-x86_64-unknown-linux-gnu" => "ctxctl"
+              end
+            end
+
+            test do
+              assert_match version.to_s, shell_output("\#{bin}/ctxctl --version")
+            end
+          end
+          RBEOF
+      - name: Push to homebrew-tap
+        run: |
+          git clone https://github.com/Xuepoo/homebrew-tap.git /tmp/homebrew-tap
+          cp ctxctl.rb /tmp/homebrew-tap/Formula/ctxctl.rb
+          cd /tmp/homebrew-tap
+          git config user.name "CtxCtl Bot"
+          git config user.email "bot@ctxctl.dev"
+          git add Formula/ctxctl.rb
+          git commit -m "chore(ctxctl): update to v${VERSION}" --no-verify --allow-empty
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/Xuepoo/homebrew-tap.git main
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  publish-scoop:
+    name: Publish Scoop
+    needs: [verify, build-binaries]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Windows binary
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ctxctl-x86_64-pc-windows-msvc
+          merge-multiple: true
+      - name: Compute SHA256 and update manifest
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          hash=$(sha256sum ctxctl-x86_64-pc-windows-msvc | cut -d' ' -f1)
+
+          cat > ctxctl.json <<- JSONEOF
+          {
+            "version": "${VERSION}",
+            "description": "Local-first memory for coding agents",
+            "homepage": "https://ctxctl.dev",
+            "license": "MIT",
+            "architecture": {
+              "64bit": {
+                "url": "https://github.com/Xuepoo/ctxctl/releases/download/v${VERSION}/ctxctl-x86_64-pc-windows-msvc.exe",
+                "hash": "${hash}",
+                "bin": [["ctxctl-x86_64-pc-windows-msvc.exe", "ctxctl"]]
+              }
+            },
+            "checkver": {
+              "github": "https://github.com/Xuepoo/ctxctl"
+            },
+            "autoupdate": {
+              "architecture": {
+                "64bit": {
+                  "url": "https://github.com/Xuepoo/ctxctl/releases/download/v\$version/ctxctl-x86_64-pc-windows-msvc.exe"
+                }
+              }
+            }
+          }
+          JSONEOF
+      - name: Push to scoop-bucket
+        run: |
+          git clone https://github.com/Xuepoo/scoop-bucket.git /tmp/scoop-bucket
+          cp ctxctl.json /tmp/scoop-bucket/bucket/ctxctl.json
+          cd /tmp/scoop-bucket
+          git config user.name "CtxCtl Bot"
+          git config user.email "bot@ctxctl.dev"
+          git add bucket/ctxctl.json
+          git commit -m "chore(ctxctl): update to v${VERSION}" --no-verify --allow-empty
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/Xuepoo/scoop-bucket.git main
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

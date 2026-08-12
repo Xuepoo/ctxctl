@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+      - name: Format check
+        run: cargo fmt --check
+      - name: Zero Network Policy Check
+        run: |
+          cargo tree -e normal | grep -E 'reqwest|hyper|ureq|curl|rustls|native-tls|openssl|quinn|tonic' && { echo "Network dependency detected"; exit 1; } || exit 0
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Markdown lint
+        uses: DavidAnson/markdownlint-cli2-action@v24
+        with:
+          globs: "**/*.md"
+          ignore: target node_modules .worktrees
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        run: cargo test --locked
+
+  build-binaries:
+    name: Build (${{ matrix.target }})
+    if: github.ref_type == 'tag'
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Binary Size Check
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            MAX_SIZE=$((6 * 1024 * 1024))
+            ACTUAL_SIZE=$(stat -c '%s' "target/${{ matrix.target }}/release/ctxctl.exe")
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            MAX_SIZE=$((5 * 1024 * 1024))
+            ACTUAL_SIZE=$(stat -f '%z' "target/${{ matrix.target }}/release/ctxctl")
+          else
+            MAX_SIZE=$((4 * 1024 * 1024))
+            ACTUAL_SIZE=$(stat -c '%s' "target/${{ matrix.target }}/release/ctxctl")
+          fi
+          echo "Actual Size: $ACTUAL_SIZE bytes"
+          echo "Budget Size: $MAX_SIZE bytes"
+          if [ "$ACTUAL_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "ctxctl binary exceeds size budget"
+            exit 1
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ctxctl-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/ctxctl${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color -shellcheck=

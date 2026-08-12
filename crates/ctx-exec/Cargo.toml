@@ -1,0 +1,11 @@
+[package]
+name = "ctx-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Token-efficient command output compression via rg-rule-driven filtering. Byte-stable output."
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+thiserror = "2"
