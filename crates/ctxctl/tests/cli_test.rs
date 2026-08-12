@@ -744,6 +744,7 @@ fn deps_python_relative_imports_honor_ignore() {
         imports,
         vec![
             ("os".to_string(), "external".to_string()),
+            ("sys".to_string(), "external".to_string()),
             ("numpy".to_string(), "external".to_string()),
             ("typing".to_string(), "external".to_string()),
             (".".to_string(), "local".to_string()),

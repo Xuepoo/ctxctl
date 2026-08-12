@@ -116,37 +116,49 @@ impl Language for PythonLang {
         &["import_statement", "import_from_statement"]
     }
 
-    fn import_target(
+    fn import_targets(
         &self,
         node: &tree_sitter::Node,
         source: &str,
-    ) -> Option<crate::imports::ImportTarget> {
+    ) -> Vec<crate::imports::ImportTarget> {
         match node.kind() {
             "import_statement" => {
-                // `import a.b.c` / `import numpy as np` / `import os, sys`
-                // (multi-imports report the first name; the line is shared).
-                let name = node.child_by_field_name("name")?;
-                let node = if name.kind() == "aliased_import" {
-                    name.named_child(0).unwrap_or(name)
-                } else {
-                    name
-                };
-                let target = node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
-                Some(crate::imports::ImportTarget {
-                    target,
-                    relative: false,
-                })
+                // `import a.b.c` / `import numpy as np` / `import os, sys` —
+                // one target per name on the same line.
+                let mut out = Vec::new();
+                let mut child = node.walk();
+                for kid in node.children(&mut child) {
+                    let name = match kid.kind() {
+                        "dotted_name" => Some(kid),
+                        "aliased_import" => kid.named_child(0),
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        if let Ok(target) = name.utf8_text(source.as_bytes()) {
+                            out.push(crate::imports::ImportTarget {
+                                target: target.trim().to_string(),
+                                relative: false,
+                            });
+                        }
+                    }
+                }
+                out
             }
             "import_from_statement" => {
                 // `from a.b import c` / `from . import x` — the module path.
-                let module = node.child_by_field_name("module_name")?;
-                let target = module.utf8_text(source.as_bytes()).ok()?.trim().to_string();
-                Some(crate::imports::ImportTarget {
+                let Some(module) = node.child_by_field_name("module_name") else {
+                    return Vec::new();
+                };
+                let Some(target) = module.utf8_text(source.as_bytes()).ok() else {
+                    return Vec::new();
+                };
+                let target = target.trim().to_string();
+                vec![crate::imports::ImportTarget {
                     relative: target.starts_with('.'),
                     target,
-                })
+                }]
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 }

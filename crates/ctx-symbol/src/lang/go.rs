@@ -61,20 +61,23 @@ impl Language for GoLang {
         &["import_spec"]
     }
 
-    fn import_target(
+    fn import_targets(
         &self,
         node: &tree_sitter::Node,
         source: &str,
-    ) -> Option<crate::imports::ImportTarget> {
-        let path = node.child_by_field_name("path")?;
-        let text = path.utf8_text(source.as_bytes()).ok()?.trim();
-        let target = text.trim_matches(['"', '`']).to_string();
+    ) -> Vec<crate::imports::ImportTarget> {
+        let path = node.child_by_field_name("path");
+        let Some(path) = path else { return Vec::new() };
+        let Some(text) = path.utf8_text(source.as_bytes()).ok() else {
+            return Vec::new();
+        };
+        let target = text.trim().trim_matches(['"', '`']).to_string();
         if target.is_empty() {
-            return None;
+            return Vec::new();
         }
-        Some(crate::imports::ImportTarget {
+        vec![crate::imports::ImportTarget {
             target,
             relative: false,
-        })
+        }]
     }
 }

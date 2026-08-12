@@ -40,12 +40,14 @@ pub fn extract_imports(parsed: &ParsedSource) -> Vec<Import> {
 
 fn collect_imports(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut Vec<Import>) {
     if parsed.language.import_node_types().contains(&node.kind()) {
-        if let Some(target) = parsed.language.import_target(&node, &parsed.source) {
+        let line = node.start_position().row + 1;
+        let byte_range = node.byte_range();
+        for target in parsed.language.import_targets(&node, &parsed.source) {
             out.push(Import {
                 target: target.target,
                 relative: target.relative,
-                line: node.start_position().row + 1,
-                byte_range: node.byte_range(),
+                line,
+                byte_range: byte_range.clone(),
             });
         }
     }

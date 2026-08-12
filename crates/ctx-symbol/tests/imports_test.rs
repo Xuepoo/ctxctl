@@ -17,7 +17,7 @@ extern crate log;
 "#;
 
 const PY_IMPORTS: &str = r#"
-import os
+import os, sys
 import numpy as np
 from typing import Optional
 from . import vendor_helpers
@@ -79,6 +79,7 @@ fn python_extracts_imports_and_relative_from() {
         imports,
         vec![
             ("os".to_string(), false, 2),
+            ("sys".to_string(), false, 2),
             ("numpy".to_string(), false, 3),
             ("typing".to_string(), false, 4),
             (".".to_string(), true, 5),

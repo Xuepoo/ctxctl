@@ -1,6 +1,6 @@
 """Fixture exercising the deps command (python)."""
 
-import os
+import os, sys
 import numpy as np
 from typing import Optional
 from . import vendor_helpers

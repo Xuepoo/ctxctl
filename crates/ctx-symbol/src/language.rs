@@ -76,20 +76,21 @@ pub trait Language: Send + Sync {
     }
 
     /// Node kinds that represent imports. Nodes of these kinds are visited by
-    /// [`crate::imports::extract_imports`] and passed to [`Self::import_target`].
+    /// [`crate::imports::extract_imports`] and passed to [`Self::import_targets`].
     fn import_node_types(&self) -> &[&'static str] {
         &[]
     }
 
-    /// Derive the import target from an import node (see
-    /// [`Self::import_node_types`]). Return `None` for nodes that are not
-    /// actually imports (e.g. a `require` check on non-require calls).
-    fn import_target(
+    /// Derive the import targets from an import node (see
+    /// [`Self::import_node_types`]). A single statement may carry several
+    /// targets (e.g. python `import os, sys`). Return an empty vec for nodes
+    /// that are not actually imports.
+    fn import_targets(
         &self,
         _node: &tree_sitter::Node,
         _source: &str,
-    ) -> Option<crate::imports::ImportTarget> {
-        None
+    ) -> Vec<crate::imports::ImportTarget> {
+        Vec::new()
     }
 }
 
