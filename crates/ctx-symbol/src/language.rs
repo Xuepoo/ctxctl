@@ -62,6 +62,11 @@ pub trait Language: Send + Sync {
         node.byte_range()
     }
 
+    /// Line-comment prefix used by compact views for fold markers.
+    fn comment_prefix(&self) -> &'static str {
+        "//"
+    }
+
     /// Doc comment immediately above the definition node, if any.
     ///
     /// Default: a comment-kind sibling scan. Backends with richer comment

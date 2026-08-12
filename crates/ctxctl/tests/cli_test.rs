@@ -299,6 +299,58 @@ fn symbol_subrange_rejects_multiple_ranges() {
 }
 
 #[test]
+fn symbol_compact_prunes_body() {
+    let output = run(&["symbol", FIXTURE, "--name", "add", "--compact"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("pub fn add(a: i32, b: i32) -> i32 {"),
+        "signature kept: {text}"
+    );
+    assert!(
+        text.contains("// ... [1 lines omitted]"),
+        "no marker: {text}"
+    );
+    assert!(!text.contains("a + b"), "body must be folded: {text}");
+
+    let json_output = run(&["symbol", "--json", FIXTURE, "--name", "add", "--compact"]);
+    let value: Value = serde_json::from_str(&stdout(&json_output)).expect("valid json");
+    assert_eq!(value["tool"], "symbol");
+    assert_eq!(value["schema_version"], 1);
+    assert!(
+        value["compact"].as_str().unwrap().contains("// ... ["),
+        "compact field: {value}"
+    );
+    assert!(
+        value.get("slice").is_none(),
+        "slice must be absent in compact mode"
+    );
+}
+
+#[test]
+fn symbol_compact_conflicts_with_signature_and_lines() {
+    let with_signature = run(&[
+        "symbol",
+        FIXTURE,
+        "--name",
+        "add",
+        "--compact",
+        "--signature",
+    ]);
+    assert_eq!(with_signature.status.code(), Some(2));
+    let with_lines = run(&[
+        "symbol",
+        FIXTURE,
+        "--name",
+        "add",
+        "--compact",
+        "--lines",
+        "1-2",
+    ]);
+    assert_eq!(with_lines.status.code(), Some(2));
+}
+
+#[test]
 fn symbol_not_found_exits_4() {
     let output = run(&["symbol", FIXTURE, "--name", "nope"]);
     assert_eq!(output.status.code(), Some(4));

@@ -75,10 +75,13 @@ enum Command {
         #[arg(long)]
         name: String,
         /// Return the signature only, not the body.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "compact")]
         signature: bool,
+        /// Return an AST-pruned view: signature + fold marker for the body.
+        #[arg(long)]
+        compact: bool,
         /// Sub-range within the symbol, 1-based, e.g. 3-10.
-        #[arg(long, value_name = "N-M")]
+        #[arg(long, value_name = "N-M", conflicts_with = "compact")]
         lines: Option<String>,
     },
     /// Read a 1-based line range from the original source (no AST).
@@ -165,8 +168,17 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
             file,
             name,
             signature,
+            compact,
             lines,
-        } => run_symbol(file, name, *signature, lines.as_deref(), format, show_saved),
+        } => run_symbol(
+            file,
+            name,
+            *signature,
+            *compact,
+            lines.as_deref(),
+            format,
+            show_saved,
+        ),
         Command::Read { file, lines } => run_read(file, lines, format, show_saved),
         Command::Deps { file } => run_deps(file, format, show_saved, &config),
         Command::Exec {
@@ -275,6 +287,7 @@ fn run_symbol(
     path: &Path,
     name: &str,
     signature_only: bool,
+    compact: bool,
     subrange: Option<&str>,
     format: Format,
     show_saved: bool,
@@ -287,7 +300,9 @@ fn run_symbol(
         .find(|s| s.name == name)
         .ok_or_else(|| ExitError::new(4, format!("symbol not found: {name}")))?;
     let body = slice_text(&source, &symbol.byte_range)?;
-    let slice = if signature_only {
+    let slice = if compact {
+        ctx_symbol::compact_symbol(&parsed, symbol)
+    } else if signature_only {
         symbol.signature.clone()
     } else if let Some(range) = subrange {
         slice_lines(&body, range).map_err(|e| ExitError::new(2, e))?
@@ -306,8 +321,12 @@ fn run_symbol(
             "language": parsed.language.name(),
             "name": symbol.name,
             "symbol": symbol_entry(symbol, false, false),
-            "slice": slice,
         });
+        if compact {
+            payload["compact"] = json!(slice);
+        } else {
+            payload["slice"] = json!(slice);
+        }
         if show_saved {
             payload["saved"] = json!({
                 "tokens_before": file_tokens,

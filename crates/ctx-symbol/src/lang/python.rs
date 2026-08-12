@@ -56,6 +56,10 @@ impl Language for PythonLang {
         true
     }
 
+    fn comment_prefix(&self) -> &'static str {
+        "#"
+    }
+
     fn definition_byte_range(&self, node: &tree_sitter::Node) -> std::ops::Range<usize> {
         // A decorated definition (`@deco` lines) wraps the function/class
         // node; include the decorators so slices carry the full semantics.

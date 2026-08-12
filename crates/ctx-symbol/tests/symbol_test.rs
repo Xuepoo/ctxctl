@@ -145,6 +145,54 @@ fn rust_byte_range_slices_original_text() {
 }
 
 #[test]
+fn compact_is_smaller_and_parseable() {
+    let parsed = ctx_symbol::parse(rust_path(), RUST_SAMPLE).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let handle = symbols.iter().find(|s| s.name == "handle_request").unwrap();
+    let raw = &RUST_SAMPLE.as_bytes()[handle.byte_range.clone()];
+    let compact = ctx_symbol::compact_symbol(&parsed, handle);
+    assert!(compact.len() < raw.len(), "compact must be smaller");
+    assert!(compact.starts_with("pub async fn handle_request"));
+    assert!(compact.contains("// ... ["));
+    assert!(compact.ends_with('}'));
+    // Re-parse without errors: the fold marker is a line comment.
+    let reparsed = ctx_symbol::parse(rust_path(), &compact).unwrap();
+    assert!(
+        !reparsed.tree.root_node().has_error(),
+        "compact must re-parse: {compact}"
+    );
+}
+
+#[test]
+fn compact_keeps_python_decorators_and_signature() {
+    let parsed = ctx_symbol::parse(py_path(), PY_DECORATED_SAMPLE).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let decorated = symbols.iter().find(|s| s.name == "decorated").unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, decorated);
+    assert!(compact.starts_with("@deco"), "decorator kept: {compact}");
+    assert!(
+        compact.contains("def decorated(x):"),
+        "signature kept: {compact}"
+    );
+    assert!(compact.contains("# ... ["), "python marker: {compact}");
+    let reparsed = ctx_symbol::parse(py_path(), &compact).unwrap();
+    assert!(
+        !reparsed.tree.root_node().has_error(),
+        "compact must re-parse: {compact}"
+    );
+}
+
+#[test]
+fn compact_passes_single_line_symbols_through() {
+    let parsed = ctx_symbol::parse(rust_path(), RUST_SAMPLE).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let max_retries = symbols.iter().find(|s| s.name == "MAX_RETRIES").unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, max_retries);
+    let raw = std::str::from_utf8(&RUST_SAMPLE.as_bytes()[max_retries.byte_range.clone()]).unwrap();
+    assert_eq!(compact, raw);
+}
+
+#[test]
 fn rust_signature_is_first_line() {
     let symbols = ctx_symbol::outline(RUST_SAMPLE, rust_path()).unwrap();
     let handle = symbols.iter().find(|s| s.name == "handle_request").unwrap();
