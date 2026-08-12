@@ -453,7 +453,7 @@ fn run_exec(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut raw = stdout.to_string();
-    if !stdout.is_empty() && !stderr.is_empty() {
+    if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
         raw.push('\n');
     }
     raw.push_str(&stderr);

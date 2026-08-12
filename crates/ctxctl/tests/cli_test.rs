@@ -863,6 +863,17 @@ fn exec_invalid_keep_pattern_fails() {
 }
 
 #[test]
+fn exec_merges_stderr_without_blank_line_gap() {
+    // stdout ends with \n; the merged output must not gain an extra blank
+    // line before the stderr content.
+    let output = run(&["exec", "sh -c 'printf \"a\\nb\\n\"; echo ERR >&2'"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = body(&output);
+    assert!(text.contains("b\nERR"), "no blank gap: {text:?}");
+    assert!(!text.contains("b\n\nERR"), "blank gap: {text:?}");
+}
+
+#[test]
 fn no_saved_suppresses_metrics() {
     let outline = run(&["outline", "--no-saved", FIXTURE]);
     assert!(!stdout(&outline).contains("saved"));
@@ -950,6 +961,100 @@ fn invalid_config_fails_with_exit_1() {
     let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("invalid config"));
+}
+
+#[test]
+fn paths_ignore_is_replaced_not_concatenated() {
+    // Defaults ignore `node_modules`; a config listing only `vendor` must
+    // REPLACE the list, so node_modules imports classify as external.
+    let dir = tmp_dir("ignore-replace");
+    let ts = dir.join("app.ts");
+    std::fs::write(&ts, "import { x } from \"node_modules/pkg\";\n").expect("write");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[paths]\nignore = [\"vendor\"]\n").expect("write");
+    let output = run_in(
+        &dir,
+        &[
+            "deps",
+            "--json",
+            "--config",
+            config.to_str().unwrap(),
+            "app.ts",
+        ],
+    );
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["imports"][0]["kind"], "external");
+
+    std::fs::create_dir_all(dir.join("node_modules/pkg")).expect("create dirs");
+    let with_default = run_in(&dir, &["deps", "--json", "app.ts"]);
+    let value: Value = serde_json::from_str(&stdout(&with_default)).expect("valid json");
+    assert_eq!(value["imports"][0]["kind"], "ignored");
+}
+
+#[test]
+fn partial_section_keeps_other_section_defaults() {
+    // A config touching only [exec].head_lines must leave the default keep
+    // patterns active (key-wise merge, not whole-section replacement).
+    let dir = tmp_dir("partial-section");
+    std::fs::write(dir.join("config.toml"), "[exec]\nhead_lines = 1\n").expect("write");
+    let cmd = printf_lines(25, "error: boom", "");
+    let output = run(&[
+        "exec",
+        "--config",
+        dir.join("config.toml").to_str().unwrap(),
+        cmd.as_str(),
+    ]);
+    let text = body(&output);
+    assert!(
+        text.contains("error: boom"),
+        "default keep must survive: {text}"
+    );
+}
+
+#[test]
+fn explicit_config_overrides_project_config() {
+    let root = tmp_dir("explicit-wins");
+    let project = root.join("proj");
+    std::fs::create_dir_all(project.join(".ctxctl")).expect("create dirs");
+    std::fs::write(
+        project.join(".ctxctl/config.toml"),
+        "[general]\nshow_saved = false\n",
+    )
+    .expect("write project config");
+    let explicit = root.join("explicit.toml");
+    std::fs::write(&explicit, "[general]\nshow_saved = true\n").expect("write explicit");
+    let output = run_in(
+        &project,
+        &["outline", "--config", explicit.to_str().unwrap(), FIXTURE],
+    );
+    assert!(
+        stdout(&output).contains("saved"),
+        "explicit must win: {}",
+        stdout(&output)
+    );
+    let without = run_in(&project, &["outline", FIXTURE]);
+    assert!(!stdout(&without).contains("saved"));
+}
+
+#[test]
+fn nearest_project_config_wins() {
+    let root = tmp_dir("nearest-wins");
+    let deep = root.join("outer/inner");
+    std::fs::create_dir_all(&deep).expect("create dirs");
+    std::fs::create_dir_all(root.join(".ctxctl")).expect("create outer config dir");
+    std::fs::write(
+        root.join(".ctxctl/config.toml"),
+        "[general]\nshow_saved = false\n",
+    )
+    .expect("write outer");
+    std::fs::create_dir_all(root.join("outer/.ctxctl")).expect("create inner config dir");
+    std::fs::write(
+        root.join("outer/.ctxctl/config.toml"),
+        "[general]\nshow_saved = true\n",
+    )
+    .expect("write inner");
+    let output = run_in(&deep, &["outline", FIXTURE]);
+    assert!(stdout(&output).contains("saved"), "nearest config must win");
 }
 
 #[test]
