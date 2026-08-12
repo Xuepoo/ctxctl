@@ -11,11 +11,18 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// Default `[outline]` fold threshold (cli-contract.md §7).
+pub const DEFAULT_FOLD_THRESHOLD: usize = 50;
+
+/// Default `[paths]` ignore globs (cli-contract.md §7).
+pub const DEFAULT_IGNORE_GLOBS: &[&str] = &["node_modules", "target", "dist", ".git"];
+
 /// Fully resolved configuration, key by key.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub exec: ExecConfig,
     pub outline: OutlineConfig,
+    pub paths: PathsConfig,
     pub general: GeneralConfig,
 }
 
@@ -30,7 +37,16 @@ pub struct ExecConfig {
 
 #[derive(Debug, Clone)]
 pub struct OutlineConfig {
+    /// Fold the symbol list (text mode) when it exceeds this many symbols.
+    pub fold_threshold: usize,
     pub show_doc: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathsConfig {
+    /// Default-ignored directories (rg-style glob), for commands that walk
+    /// directories.
+    pub ignore: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +66,13 @@ impl Default for Config {
                 tail_lines: ctx_exec::DEFAULT_TAIL_LINES,
                 collapse_threshold: ctx_exec::DEFAULT_COLLAPSE_THRESHOLD,
             },
-            outline: OutlineConfig { show_doc: true },
+            outline: OutlineConfig {
+                fold_threshold: DEFAULT_FOLD_THRESHOLD,
+                show_doc: true,
+            },
+            paths: PathsConfig {
+                ignore: DEFAULT_IGNORE_GLOBS.iter().map(|s| s.to_string()).collect(),
+            },
             general: GeneralConfig { show_saved: true },
         }
     }
@@ -63,6 +85,7 @@ impl Default for Config {
 struct Partial {
     exec: PartialExec,
     outline: PartialOutline,
+    paths: PartialPaths,
     general: PartialGeneral,
 }
 
@@ -78,7 +101,14 @@ struct PartialExec {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct PartialOutline {
+    fold_threshold: Option<usize>,
     show_doc: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PartialPaths {
+    ignore: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -101,8 +131,14 @@ impl Partial {
         if let Some(v) = self.exec.collapse_threshold {
             config.exec.collapse_threshold = v;
         }
+        if let Some(v) = self.outline.fold_threshold {
+            config.outline.fold_threshold = v;
+        }
         if let Some(v) = self.outline.show_doc {
             config.outline.show_doc = v;
+        }
+        if let Some(ignore) = self.paths.ignore {
+            config.paths.ignore = ignore;
         }
         if let Some(v) = self.general.show_saved {
             config.general.show_saved = v;

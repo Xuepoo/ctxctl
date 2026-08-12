@@ -423,6 +423,91 @@ fn invalid_config_fails_with_exit_1() {
 }
 
 #[test]
+fn outline_fold_threshold_folds_in_text_mode() {
+    let dir = tmp_dir("fold");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[outline]\nfold_threshold = 2\n").expect("write config");
+    let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("... [2 symbols omitted]"),
+        "no fold marker: {text}"
+    );
+    assert!(
+        text.contains("struct  Point"),
+        "first symbols still shown: {text}"
+    );
+    assert!(
+        !text.contains("const   ANSWER"),
+        "symbols beyond threshold must fold: {text}"
+    );
+}
+
+#[test]
+fn outline_fold_threshold_does_not_affect_json() {
+    let dir = tmp_dir("fold-json");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[outline]\nfold_threshold = 1\n").expect("write config");
+    let output = run(&[
+        "outline",
+        "--json",
+        "--config",
+        config.to_str().unwrap(),
+        FIXTURE,
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["symbols"].as_array().map(Vec::len), Some(4));
+}
+
+#[test]
+fn xdg_config_new_keys_parse() {
+    let root = tmp_dir("xdg-newkeys");
+    let xdg = root.join("ctxctl");
+    std::fs::create_dir_all(&xdg).expect("create xdg dir");
+    std::fs::write(
+        xdg.join("config.toml"),
+        "[paths]\nignore = [\"node_modules\", \"target\", \"dist\", \".git\", \"vendor\"]\n[outline]\nfold_threshold = 2\n",
+    )
+    .expect("write xdg config");
+    let mut cmd = Command::new(BIN);
+    cmd.env("XDG_CONFIG_HOME", &root).args(["outline", FIXTURE]);
+    let output = cmd.output().expect("run ctxctl");
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("... [2 symbols omitted]"),
+        "fold_threshold from XDG config not applied"
+    );
+}
+
+#[test]
+fn project_config_overrides_global_fold_threshold() {
+    let root = tmp_dir("fold-merge");
+    let xdg = root.join("xdg/ctxctl");
+    std::fs::create_dir_all(&xdg).expect("create xdg dir");
+    std::fs::write(xdg.join("config.toml"), "[outline]\nfold_threshold = 1\n")
+        .expect("write xdg config");
+    let project = root.join("proj/.ctxctl");
+    std::fs::create_dir_all(&project).expect("create project dir");
+    std::fs::write(
+        project.join("config.toml"),
+        "[outline]\nfold_threshold = 4\n",
+    )
+    .expect("write project config");
+    let mut cmd = Command::new(BIN);
+    cmd.env("XDG_CONFIG_HOME", root.join("xdg"))
+        .current_dir(root.join("proj"))
+        .args(["outline", FIXTURE]);
+    let output = cmd.output().expect("run ctxctl");
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        !stdout(&output).contains("symbols omitted"),
+        "project fold_threshold=4 must override global fold_threshold=1"
+    );
+}
+
+#[test]
 fn output_is_byte_stable() {
     let a = stdout(&run(&["outline", "--json", FIXTURE]));
     let b = stdout(&run(&["outline", "--json", FIXTURE]));

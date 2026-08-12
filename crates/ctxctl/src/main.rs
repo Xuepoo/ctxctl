@@ -224,14 +224,24 @@ fn run_outline(
     };
     println!("{header}");
 
-    if !symbols.is_empty() {
-        let name_w = symbols
+    // [outline] fold_threshold (§7): fold the symbol list in text mode when it
+    // exceeds the threshold. JSON stays complete (machine contract).
+    let fold_limit = config.outline.fold_threshold;
+    let folded = symbols.len() > fold_limit;
+    let shown: &[Symbol] = if folded {
+        &symbols[..fold_limit]
+    } else {
+        &symbols
+    };
+
+    if !shown.is_empty() {
+        let name_w = shown
             .iter()
             .map(|s| s.name.len())
             .max()
             .unwrap_or(0)
             .max(10);
-        for s in &symbols {
+        for s in shown {
             let loc = if no_lines {
                 String::new()
             } else if s.start_line == s.end_line {
@@ -247,6 +257,9 @@ fn run_outline(
                 s.signature,
             );
         }
+    }
+    if folded {
+        println!("  ... [{} symbols omitted]", symbols.len() - fold_limit);
     }
     Ok(ExitCode::SUCCESS)
 }
