@@ -32,6 +32,7 @@ impl Language for CppLang {
             ("enum_specifier", SymbolKind::Enum),
             ("type_definition", SymbolKind::Type),
             ("field_declaration", SymbolKind::Variable),
+            ("declaration", SymbolKind::Variable),
             ("namespace_definition", SymbolKind::Type),
             ("namespace_alias_definition", SymbolKind::Type),
             ("preproc_def", SymbolKind::Const),
@@ -47,11 +48,15 @@ impl Language for CppLang {
         {
             return None;
         }
+        // Function prototypes have no body to slice; skip them.
+        if super::c::is_function_prototype(*node) {
+            return None;
+        }
         let name_node = match node.child_by_field_name("name") {
             Some(n) => n,
             None => {
-                // function_definition/type_definition/field_declaration carry
-                // the name down the declarator chain.
+                // function_definition/type_definition/field_declaration/
+                // declaration carry the name down the declarator chain.
                 let declarator = node.child_by_field_name("declarator")?;
                 super::c::declarator_name(declarator, 0)?
             }

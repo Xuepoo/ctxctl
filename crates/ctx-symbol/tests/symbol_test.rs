@@ -540,6 +540,85 @@ fn lua_extracts_functions_and_variables() {
 }
 
 #[test]
+fn c_globals_pointers_and_prototypes() {
+    let src = r#"
+int values[10];
+int *next(void);
+int (*fp)(int);
+struct S { int a; } inst;
+"#;
+    let symbols = ctx_symbol::outline(src, c_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // prototypes are skipped; globals, function pointers, structs, and
+    // instantiated instances are extracted (the declaration node precedes
+    // its wrapped struct_specifier)
+    assert_eq!(names, vec!["values", "fp", "inst", "S", "a"]);
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Variable); // fp
+    assert_eq!(symbols[2].kind, ctx_symbol::SymbolKind::Variable); // inst
+    // function pointer slice points at the declaration
+    let fp = symbols.iter().find(|s| s.name == "fp").unwrap();
+    let slice = &src.as_bytes()[fp.byte_range.clone()];
+    assert!(
+        std::str::from_utf8(slice)
+            .unwrap()
+            .contains("int (*fp)(int)")
+    );
+}
+
+#[test]
+fn cpp_special_members_and_operators() {
+    let src = r#"
+class W {
+    ~W() {}
+    W& operator=(const W& o) { return *this; }
+    W(int x) : x_(x) {}
+    int x_;
+};
+"#;
+    let symbols = ctx_symbol::outline(src, cpp_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["W", "~W", "operator=", "W", "x_"]);
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Function);
+    assert_eq!(symbols[2].kind, ctx_symbol::SymbolKind::Function);
+    let dtor = symbols.iter().find(|s| s.name == "~W").unwrap();
+    let slice = &src.as_bytes()[dtor.byte_range.clone()];
+    assert!(std::str::from_utf8(slice).unwrap().contains("~W()"));
+}
+
+#[test]
+fn c_typedef_compact_keeps_the_close() {
+    let src = r#"
+typedef struct Point {
+    double x;
+    double y;
+} Point;
+
+typedef struct {
+    int a;
+} Anon;
+"#;
+    let parsed = ctx_symbol::parse(c_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    for s in symbols {
+        let compact = ctx_symbol::compact_symbol(&parsed, &s);
+        let reparsed = ctx_symbol::parse(c_path(), &compact).unwrap();
+        assert!(
+            !reparsed.tree.root_node().has_error(),
+            "{} compact: {compact}",
+            s.name
+        );
+        let multi_line = s.byte_range.start..s.byte_range.end;
+        let _ = multi_line;
+        if src.as_bytes()[s.byte_range.clone()]
+            .windows(2)
+            .any(|w| w == b"\n")
+        {
+            assert!(compact.contains("... ["), "{} folded: {compact}", s.name);
+        }
+    }
+}
+
+#[test]
 fn compact_passes_single_line_symbols_through() {
     let parsed = ctx_symbol::parse(rust_path(), RUST_SAMPLE).unwrap();
     let symbols = ctx_symbol::extract_symbols(&parsed);

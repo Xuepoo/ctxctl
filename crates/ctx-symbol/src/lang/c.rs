@@ -27,6 +27,7 @@ impl Language for CLang {
             ("enum_specifier", SymbolKind::Enum),
             ("type_definition", SymbolKind::Type),
             ("field_declaration", SymbolKind::Variable),
+            ("declaration", SymbolKind::Variable),
             ("preproc_def", SymbolKind::Const),
             ("preproc_function_def", SymbolKind::Const),
         ]
@@ -40,12 +41,17 @@ impl Language for CLang {
         {
             return None;
         }
+        // Function prototypes have no body to slice; skip them.
+        if is_function_prototype(*node) {
+            return None;
+        }
         let name_node = match node.child_by_field_name("name") {
             Some(n) => n,
             None => {
-                // function_definition/type_definition/field_declaration carry
-                // the name down the declarator chain: declarator ->
-                // function_declarator -> (pointer_declarator)* -> identifier.
+                // function_definition/type_definition/field_declaration/
+                // declaration carry the name down the declarator chain:
+                // declarator -> function_declarator -> (pointer_declarator)*
+                // -> identifier.
                 let declarator = node.child_by_field_name("declarator")?;
                 declarator_name(declarator, 0)?
             }
@@ -106,10 +112,55 @@ pub(crate) fn declarator_name(node: tree_sitter::Node, depth: usize) -> Option<t
         return None;
     }
     match node.kind() {
-        "identifier" | "field_identifier" | "type_identifier" => Some(node),
-        _ => {
-            let inner = node.child_by_field_name("declarator")?;
+        "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
+        | "operator_name" => Some(node),
+        // `int (*fp)(int)` — the parens have no declarator field; the wrapped
+        // declarator is the first named child.
+        "parenthesized_declarator" => {
+            let mut cursor = node.walk();
+            let inner = node.named_children(&mut cursor).next()?;
             declarator_name(inner, depth + 1)
         }
+        _ => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                declarator_name(inner, depth + 1)
+            } else {
+                // reference_declarator and friends carry the name in their
+                // first named child.
+                let mut cursor = node.walk();
+                let inner = node.named_children(&mut cursor).next()?;
+                declarator_name(inner, depth + 1)
+            }
+        }
     }
+}
+
+/// True for `declaration` nodes that are function prototypes (no body).
+/// A prototype has a `function_declarator` in its declarator chain with no
+/// wrapping `parenthesized_declarator` — the parens mark a function-pointer
+/// variable (`int (*fp)(int);`).
+pub(crate) fn is_function_prototype(node: tree_sitter::Node) -> bool {
+    if node.kind() != "declaration" {
+        return false;
+    }
+    let Some(mut cur) = node.child_by_field_name("declarator") else {
+        return false;
+    };
+    let mut has_fn = false;
+    let mut has_parens = false;
+    for _ in 0..16 {
+        match cur.kind() {
+            "function_declarator" => has_fn = true,
+            "parenthesized_declarator" => has_parens = true,
+            "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
+            | "operator_name" => break,
+            _ => {}
+        }
+        if let Some(next) = cur.child_by_field_name("declarator") {
+            cur = next;
+        } else {
+            break;
+        }
+    }
+    has_fn && !has_parens
 }

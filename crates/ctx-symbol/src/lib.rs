@@ -108,10 +108,15 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     out
 }
 
-/// True if the line is a bare block closer (`}`, `]`, `)`, `end`, optionally
-/// followed by `;` as in C/C++ class declarations).
+/// True if the line is a block closer: it starts with `}`, `]`, `)`
+/// (optionally followed by more tokens, as in `} Point;` typedef closes), or
+/// is an `end` keyword line (ruby/lua).
 fn is_closer(line: &str) -> bool {
-    matches!(line.trim().trim_end_matches(';'), "}" | "]" | ")" | "end")
+    let t = line.trim();
+    let c = t.as_bytes().first().copied().unwrap_or(0);
+    (c == b'}' || c == b']' || c == b')')
+        || t.trim_end_matches(';') == "end"
+        || t.starts_with("end ")
 }
 
 /// True if the line is indented deeper than the reference prefix.
