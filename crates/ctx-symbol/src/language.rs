@@ -123,6 +123,8 @@ pub static REGISTRY: &[&'static dyn Language] = &[
     &crate::lang::typescript::TypeScriptLang,
     &crate::lang::python::PythonLang,
     &crate::lang::go::GoLang,
+    &crate::lang::javascript::JavaScriptLang,
+    &crate::lang::java::JavaLang,
 ];
 
 /// True if the node kind is a definition type for the given language.

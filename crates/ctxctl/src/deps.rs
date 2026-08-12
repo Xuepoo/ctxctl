@@ -101,7 +101,7 @@ fn classify(
             }
         }
     }
-    if matches!(language, "python" | "go") {
+    if matches!(language, "python" | "go" | "java") {
         for candidate in existence_candidates(language, &imp.target) {
             if candidate.exists() {
                 return DepKind::Local;
@@ -126,6 +126,11 @@ fn existence_candidates(language: &str, target: &str) -> Vec<std::path::PathBuf>
             let rel: std::path::PathBuf = target.split('/').collect();
             out.push(rel.clone());
             out.push(rel.with_extension("go"));
+        }
+        "java" => {
+            let rel: std::path::PathBuf = target.split('.').collect();
+            out.push(rel.clone());
+            out.push(rel.with_extension("java"));
         }
         _ => {}
     }

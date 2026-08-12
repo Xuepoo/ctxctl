@@ -9,6 +9,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_ctxctl");
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.rs");
 const PY_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.py");
 const GO_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.go");
+const JS_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.js");
+const JAVA_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.java");
 const DEPS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.rs");
 const DEPS_PY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.py");
 const DEPS_GO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.go");
@@ -208,6 +210,103 @@ fn read_works_on_python_and_go() {
     let go = run(&["read", GO_FIXTURE, "--lines", "11-13"]);
     assert_eq!(go.status.code(), Some(0), "stderr: {}", stderr(&go));
     assert!(stdout(&go).contains("func (p *Point) Norm() float64 {"));
+}
+
+#[test]
+fn javascript_outline_symbol_and_deps() {
+    let output = run(&["outline", "--json", JS_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "javascript");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["os", "User", "greet", "formatName", "MAX_RETRIES"]
+    );
+
+    let sym = run(&["symbol", JS_FIXTURE, "--name", "greet"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    assert!(stdout(&sym).contains("greet()"));
+
+    let deps = run(&["deps", "--json", JS_FIXTURE]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    assert_eq!(value["language"], "javascript");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("express".to_string(), "external".to_string()),
+            ("./helpers".to_string(), "local".to_string()),
+            ("os".to_string(), "external".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn java_outline_symbol_and_deps_local_probe() {
+    let output = run(&["outline", "--json", JAVA_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "java");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Point", "x", "y", "norm", "Repo", "all", "App", "main"]
+    );
+
+    let sym = run(&["symbol", JAVA_FIXTURE, "--name", "norm"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    assert!(stdout(&sym).contains("Math.sqrt"));
+
+    // com.example.util.Helper resolves to a local package dir under the cwd.
+    let dir = tmp_dir("java-local-probe");
+    std::fs::create_dir_all(dir.join("com/example/util")).expect("create dirs");
+    std::fs::write(
+        dir.join("com/example/util/Helper.java"),
+        "package com.example.util;\n",
+    )
+    .expect("write file");
+    let deps = run_in(&dir, &["deps", "--json", JAVA_FIXTURE]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("java.util.List".to_string(), "external".to_string()),
+            ("java.lang.Math".to_string(), "external".to_string()),
+            ("com.example.util.Helper".to_string(), "local".to_string()),
+        ]
+    );
 }
 
 #[test]

@@ -49,6 +49,23 @@ export { helper } from "./helpers2";
 export const x = 1;
 "#;
 
+const JS_IMPORTS: &str = r#"
+import express from "express";
+import { helper } from "./helpers";
+const os = require("os");
+export { helper } from "./helpers2";
+export function f() {}
+"#;
+
+const JAVA_IMPORTS: &str = r#"
+package com.example.app;
+
+import java.util.List;
+import static java.lang.Math.PI;
+import com.example.util.Helper;
+import java.util.*;
+"#;
+
 fn extract(source: &str, path: &Path) -> Vec<(String, bool, usize)> {
     ctx_symbol::extract_imports(&ctx_symbol::parse(path, source).unwrap())
         .into_iter()
@@ -116,6 +133,34 @@ fn typescript_extracts_statements_require_and_reexports() {
             ("path".to_string(), false, 6),
             ("os".to_string(), false, 7),
             ("./helpers2".to_string(), true, 8),
+        ]
+    );
+}
+
+#[test]
+fn javascript_extracts_imports_require_and_reexports() {
+    let imports = extract(JS_IMPORTS, Path::new("sample.js"));
+    assert_eq!(
+        imports,
+        vec![
+            ("express".to_string(), false, 2),
+            ("./helpers".to_string(), true, 3),
+            ("os".to_string(), false, 4),
+            ("./helpers2".to_string(), true, 5),
+        ]
+    );
+}
+
+#[test]
+fn java_extracts_imports_including_static_and_wildcard() {
+    let imports = extract(JAVA_IMPORTS, Path::new("Sample.java"));
+    assert_eq!(
+        imports,
+        vec![
+            ("java.util.List".to_string(), false, 4),
+            ("java.lang.Math".to_string(), false, 5),
+            ("com.example.util.Helper".to_string(), false, 6),
+            ("java.util".to_string(), false, 7),
         ]
     );
 }

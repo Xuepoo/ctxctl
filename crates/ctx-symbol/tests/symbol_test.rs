@@ -77,6 +77,61 @@ def processed(y):
     return y
 "#;
 
+const JS_SAMPLE: &str = r#"
+// Fixture for the javascript backend.
+import express from "express";
+import { helper } from "./helpers";
+const os = require("os");
+
+/** A user entity. */
+class User {
+  /** Say hello. */
+  greet() {
+    return "hi";
+  }
+}
+
+export function formatName(user) {
+  return user.name.trim();
+}
+
+const MAX_RETRIES = 3;
+var legacy = 1;
+"#;
+
+const JAVA_SAMPLE: &str = r#"
+package com.example.app;
+
+import java.util.List;
+import static java.lang.Math.PI;
+import com.example.util.Helper;
+
+/** A 2D point. */
+public class Point {
+    private double x;
+    private double y;
+
+    /** Distance from the origin. */
+    public double norm() {
+        return Math.sqrt(x * x + y * y);
+    }
+}
+
+/** A repository interface. */
+public interface Repo {
+    List<String> all();
+}
+
+public record Pair(int a, int b) {}
+
+public enum Status { ON, OFF }
+
+public class App {
+    public App() {}
+    public static void main(String[] args) {}
+}
+"#;
+
 const GO_SAMPLE: &str = r#"
 // Point is a 2D point.
 type Point struct {
@@ -113,6 +168,14 @@ fn py_path() -> &'static Path {
 
 fn go_path() -> &'static Path {
     Path::new("sample.go")
+}
+
+fn js_path() -> &'static Path {
+    Path::new("sample.js")
+}
+
+fn java_path() -> &'static Path {
+    Path::new("Sample.java")
 }
 
 #[test]
@@ -190,6 +253,53 @@ fn compact_passes_single_line_symbols_through() {
     let compact = ctx_symbol::compact_symbol(&parsed, max_retries);
     let raw = std::str::from_utf8(&RUST_SAMPLE.as_bytes()[max_retries.byte_range.clone()]).unwrap();
     assert_eq!(compact, raw);
+}
+
+#[test]
+fn javascript_extracts_classes_functions_and_variables() {
+    let symbols = ctx_symbol::outline(JS_SAMPLE, js_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    // `const os = require(...)` is a top-level binding -> also a variable.
+    assert_eq!(
+        names,
+        vec!["os", "User", "greet", "formatName", "MAX_RETRIES", "legacy"]
+    );
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Class);
+    assert_eq!(symbols[2].kind, ctx_symbol::SymbolKind::Method);
+    assert_eq!(symbols[4].kind, ctx_symbol::SymbolKind::Variable);
+    // doc comments via /** */ are attached
+    assert_eq!(symbols[1].doc_comment.as_deref(), Some("A user entity."));
+    // byte slicing works
+    let greet = symbols.iter().find(|s| s.name == "greet").unwrap();
+    let slice = &JS_SAMPLE.as_bytes()[greet.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("greet()"));
+    assert!(!text.contains("class User"));
+}
+
+#[test]
+fn java_extracts_types_methods_constructors_and_fields() {
+    let symbols = ctx_symbol::outline(JAVA_SAMPLE, java_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "Point", "x", "y", "norm", "Repo", "all", "Pair", "Status", "App", "App", "main",
+        ]
+    );
+    assert_eq!(symbols[0].kind, ctx_symbol::SymbolKind::Class);
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Variable);
+    assert_eq!(symbols[4].kind, ctx_symbol::SymbolKind::Interface);
+    assert_eq!(symbols[6].kind, ctx_symbol::SymbolKind::Class); // record
+    assert_eq!(symbols[7].kind, ctx_symbol::SymbolKind::Enum);
+    assert_eq!(symbols[9].kind, ctx_symbol::SymbolKind::Method); // constructor
+    assert_eq!(symbols[0].doc_comment.as_deref(), Some("A 2D point."));
+    // slicing works
+    let norm = symbols.iter().find(|s| s.name == "norm").unwrap();
+    let slice = &JAVA_SAMPLE.as_bytes()[norm.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("Math.sqrt"));
+    assert!(!text.contains("class Point"));
 }
 
 #[test]
