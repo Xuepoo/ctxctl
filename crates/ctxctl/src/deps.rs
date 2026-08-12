@@ -57,10 +57,18 @@ fn classify(imp: &Import, language: &str, file_dir: &Path, ignore: &[String]) ->
         }
         // Relative imports resolve against the file's directory; python
         // leading-dot modules (`from .x import y`) resolve against the
-        // package directory.
-        let rel = imp.target.trim_start_matches('.');
+        // package directory. Keep `./`/`../` intact for Path::join; only
+        // python's bare leading dots are stripped.
+        let rel = if imp.target.starts_with("./") || imp.target.starts_with("../") {
+            &imp.target[..]
+        } else {
+            imp.target.trim_start_matches('.')
+        };
         let joined = file_dir.join(rel);
-        return if is_ignored(&joined.to_string_lossy(), ignore) {
+        // Slash-containing ignore patterns match relative paths, so strip a
+        // cwd prefix when present (deterministic per invocation).
+        let probe = relative_to_cwd(&joined);
+        return if is_ignored(&probe, ignore) {
             DepKind::Ignored
         } else {
             DepKind::Local
@@ -115,6 +123,15 @@ fn is_ignored(path: &str, ignore: &[String]) -> bool {
                 .any(|segment| glob_match(pattern, segment))
         }
     })
+}
+
+/// Strip a cwd prefix from an absolute path so slash-containing ignore
+/// patterns can match; falls back to the path as-is.
+fn relative_to_cwd(path: &Path) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    path.strip_prefix(&cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
 
 /// Resolve `.` / `..` segments and drop empty ones.

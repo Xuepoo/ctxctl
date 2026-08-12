@@ -604,6 +604,9 @@ fn slice_text(source: &str, range: &std::ops::Range<usize>) -> Result<String, Ex
 /// Slice 1-based inclusive line numbers out of a multi-line text.
 fn slice_lines(text: &str, range: &str) -> Result<String, String> {
     let ranges = parse_ranges(range)?;
+    if ranges.len() > 1 {
+        return Err("symbol --lines accepts a single range (e.g. 3-10)".to_string());
+    }
     let lines: Vec<&str> = text.lines().collect();
     let (start, end) = clamp_open_ends(ranges, lines.len())[0];
     if start > lines.len() {

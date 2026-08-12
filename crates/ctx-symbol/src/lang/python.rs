@@ -63,8 +63,14 @@ impl Language for PythonLang {
             if prev.kind() == "expression_statement" {
                 // The module docstring is the first statement of the module;
                 // it documents the module, not the first symbol below it.
-                let is_module_doc = prev.parent().is_some_and(|p| p.kind() == "module")
-                    && prev.prev_sibling().is_none();
+                // Skip comment siblings when checking (comments are not
+                // statements in Python semantics).
+                let mut prev_statement = prev.prev_sibling();
+                while prev_statement.is_some_and(|s| s.kind().contains("comment")) {
+                    prev_statement = prev_statement.unwrap().prev_sibling();
+                }
+                let is_module_doc =
+                    prev.parent().is_some_and(|p| p.kind() == "module") && prev_statement.is_none();
                 if !is_module_doc {
                     if let Some(first) = prev.named_child(0) {
                         if first.kind() == "string" {

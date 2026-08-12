@@ -292,6 +292,13 @@ fn symbol_subrange_out_of_bounds_exits_2() {
 }
 
 #[test]
+fn symbol_subrange_rejects_multiple_ranges() {
+    let output = run(&["symbol", FIXTURE, "--name", "add", "--lines", "1-2,4-5"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("single range"));
+}
+
+#[test]
 fn symbol_not_found_exits_4() {
     let output = run(&["symbol", FIXTURE, "--name", "nope"]);
     assert_eq!(output.status.code(), Some(4));
@@ -597,6 +604,9 @@ fn output_is_byte_stable() {
     let c = stdout(&run(&["exec", "--json", &cmd]));
     let d = stdout(&run(&["exec", "--json", &cmd]));
     assert_eq!(c, d);
+    let e = stdout(&run(&["deps", "--json", DEPS_RS]));
+    let f = stdout(&run(&["deps", "--json", DEPS_RS]));
+    assert_eq!(e, f);
 }
 
 #[test]
@@ -755,4 +765,34 @@ fn deps_unsupported_extension_exits_2() {
     let output = run(&["deps", path.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("unsupported extension"));
+}
+
+#[test]
+fn deps_slash_ignore_pattern_matches_relative_import() {
+    // `src/vendor/*` must match a relative import resolved inside the file's
+    // directory even though the fixture path is absolute.
+    let root = tmp_dir("deps-slash-ignore");
+    let vendor = root.join("proj/src/vendor");
+    std::fs::create_dir_all(&vendor).expect("create dirs");
+    let fixture = vendor.join("mod.ts");
+    std::fs::write(&fixture, "import { helper } from \"./helper\";\n").expect("write fixture");
+    let config = root.join("config.toml");
+    std::fs::write(&config, "[paths]\nignore = [\"src/vendor/*\"]\n").expect("write config");
+
+    let output = run_in(
+        &root.join("proj"),
+        &[
+            "deps",
+            "--json",
+            "--config",
+            config.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports = value["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0]["target"], "./helper");
+    assert_eq!(imports[0]["kind"], "ignored");
 }
