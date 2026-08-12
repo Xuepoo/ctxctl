@@ -62,4 +62,63 @@ impl Language for TypeScriptLang {
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         true
     }
+
+    fn import_node_types(&self) -> &[&'static str] {
+        &[
+            "import_statement",
+            "import_require_clause",
+            "export_statement",
+            "call_expression",
+        ]
+    }
+
+    fn import_target(
+        &self,
+        node: &tree_sitter::Node,
+        source: &str,
+    ) -> Option<crate::imports::ImportTarget> {
+        let target = match node.kind() {
+            "import_statement" | "import_require_clause" => {
+                // `import x from 'y'` / `import 'y'` / `import x = require('y')`.
+                let src = node.child_by_field_name("source")?;
+                string_value(src, source)?
+            }
+            "export_statement" => {
+                // Only re-exports carry a source: `export {x} from 'y'`.
+                let src = node.child_by_field_name("source")?;
+                string_value(src, source)?
+            }
+            "call_expression" => {
+                // `require('y')`; skipped when part of `import x = require(...)`.
+                if node
+                    .parent()
+                    .is_some_and(|p| p.kind() == "import_require_clause")
+                {
+                    return None;
+                }
+                let function = node.child_by_field_name("function")?;
+                if function.utf8_text(source.as_bytes()).ok()? != "require" {
+                    return None;
+                }
+                let args = node.child_by_field_name("arguments")?;
+                let first = args.named_child(0)?;
+                string_value(first, source)?
+            }
+            _ => return None,
+        };
+        let relative = target.starts_with("./") || target.starts_with("../");
+        Some(crate::imports::ImportTarget { target, relative })
+    }
+}
+
+/// Text of a string literal node without its quotes.
+fn string_value(node: tree_sitter::Node, source: &str) -> Option<String> {
+    let text = node.utf8_text(source.as_bytes()).ok()?.trim();
+    let unquoted = text.strip_prefix(['\'', '"'])?;
+    Some(
+        unquoted
+            .strip_suffix(['\'', '"'])
+            .unwrap_or(unquoted)
+            .to_string(),
+    )
 }

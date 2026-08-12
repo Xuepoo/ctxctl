@@ -1,0 +1,120 @@
+//! Unit tests for import extraction across all language backends.
+
+use std::path::Path;
+
+const RUST_IMPORTS: &str = r#"
+use serde::Deserialize;
+use crate::lib::helper;
+use std::collections::{HashMap, HashSet};
+use super::util as u;
+
+mod frontend;
+mod inline {
+    pub fn x() {}
+}
+
+extern crate log;
+"#;
+
+const PY_IMPORTS: &str = r#"
+import os
+import numpy as np
+from typing import Optional
+from . import vendor_helpers
+from .models import User
+import myproject.models
+"#;
+
+const GO_IMPORTS: &str = r#"
+package main
+
+import (
+	"fmt"
+	_ "embed"
+	"github.com/x/y"
+	"localpkg/helper"
+)
+
+func main() {}
+"#;
+
+const TS_IMPORTS: &str = r#"
+import express from "express";
+import { helper } from "./helpers";
+import "../lib/util";
+import type { User } from "./types";
+import path = require("path");
+const os = require("os");
+export { helper } from "./helpers2";
+export const x = 1;
+"#;
+
+fn extract(source: &str, path: &Path) -> Vec<(String, bool, usize)> {
+    ctx_symbol::extract_imports(&ctx_symbol::parse(path, source).unwrap())
+        .into_iter()
+        .map(|i| (i.target, i.relative, i.line))
+        .collect()
+}
+
+#[test]
+fn rust_extracts_use_mod_and_extern_crate() {
+    let imports = extract(RUST_IMPORTS, Path::new("sample.rs"));
+    assert_eq!(
+        imports,
+        vec![
+            ("serde::Deserialize".to_string(), false, 2),
+            ("crate::lib::helper".to_string(), true, 3),
+            ("std::collections".to_string(), false, 4),
+            ("super::util".to_string(), true, 5),
+            ("frontend".to_string(), true, 7),
+            ("log".to_string(), false, 12),
+        ]
+    );
+}
+
+#[test]
+fn python_extracts_imports_and_relative_from() {
+    let imports = extract(PY_IMPORTS, Path::new("sample.py"));
+    assert_eq!(
+        imports,
+        vec![
+            ("os".to_string(), false, 2),
+            ("numpy".to_string(), false, 3),
+            ("typing".to_string(), false, 4),
+            (".".to_string(), true, 5),
+            (".models".to_string(), true, 6),
+            ("myproject.models".to_string(), false, 7),
+        ]
+    );
+}
+
+#[test]
+fn go_extracts_import_specs() {
+    let imports = extract(GO_IMPORTS, Path::new("sample.go"));
+    assert_eq!(
+        imports,
+        vec![
+            ("fmt".to_string(), false, 5),
+            ("embed".to_string(), false, 6),
+            ("github.com/x/y".to_string(), false, 7),
+            ("localpkg/helper".to_string(), false, 8),
+        ]
+    );
+}
+
+#[test]
+fn typescript_extracts_statements_require_and_reexports() {
+    let imports = extract(TS_IMPORTS, Path::new("sample.ts"));
+    assert_eq!(
+        imports,
+        vec![
+            ("express".to_string(), false, 2),
+            ("./helpers".to_string(), true, 3),
+            ("../lib/util".to_string(), true, 4),
+            ("./types".to_string(), true, 5),
+            ("path".to_string(), false, 6),
+            ("os".to_string(), false, 7),
+            ("./helpers2".to_string(), true, 8),
+        ]
+    );
+}

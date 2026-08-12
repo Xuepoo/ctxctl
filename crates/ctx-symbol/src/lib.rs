@@ -12,10 +12,12 @@
 //! - Byte-stable output: slices come from the original source, preserving
 //!   comments/formatting and enabling provider prompt caching.
 
+pub mod imports;
 pub mod lang;
 pub mod language;
 pub mod symbol;
 
+pub use imports::{Import, ImportTarget, extract_imports};
 pub use language::{Language, ParsedSource, SymbolError, extract_symbols, parse};
 pub use symbol::{Symbol, SymbolKind};
 

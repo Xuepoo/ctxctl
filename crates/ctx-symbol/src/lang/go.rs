@@ -55,4 +55,26 @@ impl Language for GoLang {
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         true
     }
+
+    fn import_node_types(&self) -> &[&'static str] {
+        // `import_spec` appears in both `import "x"` and `import (...)` forms.
+        &["import_spec"]
+    }
+
+    fn import_target(
+        &self,
+        node: &tree_sitter::Node,
+        source: &str,
+    ) -> Option<crate::imports::ImportTarget> {
+        let path = node.child_by_field_name("path")?;
+        let text = path.utf8_text(source.as_bytes()).ok()?.trim();
+        let target = text.trim_matches(['"', '`']).to_string();
+        if target.is_empty() {
+            return None;
+        }
+        Some(crate::imports::ImportTarget {
+            target,
+            relative: false,
+        })
+    }
 }

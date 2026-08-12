@@ -79,6 +79,44 @@ impl Language for PythonLang {
         // `# comment` siblings work through the generic scan.
         doc_comment_above(parsed, node)
     }
+
+    fn import_node_types(&self) -> &[&'static str] {
+        &["import_statement", "import_from_statement"]
+    }
+
+    fn import_target(
+        &self,
+        node: &tree_sitter::Node,
+        source: &str,
+    ) -> Option<crate::imports::ImportTarget> {
+        match node.kind() {
+            "import_statement" => {
+                // `import a.b.c` / `import numpy as np` / `import os, sys`
+                // (multi-imports report the first name; the line is shared).
+                let name = node.child_by_field_name("name")?;
+                let node = if name.kind() == "aliased_import" {
+                    name.named_child(0).unwrap_or(name)
+                } else {
+                    name
+                };
+                let target = node.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+                Some(crate::imports::ImportTarget {
+                    target,
+                    relative: false,
+                })
+            }
+            "import_from_statement" => {
+                // `from a.b import c` / `from . import x` — the module path.
+                let module = node.child_by_field_name("module_name")?;
+                let target = module.utf8_text(source.as_bytes()).ok()?.trim().to_string();
+                Some(crate::imports::ImportTarget {
+                    relative: target.starts_with('.'),
+                    target,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Extract the content of a Python string literal, stripping an optional

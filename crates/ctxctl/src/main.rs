@@ -11,6 +11,7 @@
 //! No timestamps, no counters, no environment dependence.
 
 mod config;
+mod deps;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
@@ -88,6 +89,11 @@ enum Command {
         #[arg(long)]
         lines: String,
     },
+    /// Print the import/module dependency graph of a file.
+    Deps {
+        /// Target file.
+        file: PathBuf,
+    },
     /// Run a command and print its output compressed by ctx-exec.
     Exec {
         /// Command line to run; shell-word quoting applies, e.g. `"cargo test -- --list"`.
@@ -162,6 +168,7 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
             lines,
         } => run_symbol(file, name, *signature, lines.as_deref(), format, show_saved),
         Command::Read { file, lines } => run_read(file, lines, format, show_saved),
+        Command::Deps { file } => run_deps(file, format, show_saved, &config),
         Command::Exec {
             cmd,
             keep,
@@ -483,6 +490,89 @@ fn run_exec(
         );
     }
     Ok(ExitCode::from(code as u8))
+}
+
+fn run_deps(
+    path: &Path,
+    format: Format,
+    show_saved: bool,
+    config: &Config,
+) -> Result<ExitCode, ExitError> {
+    let source = read_source(path)?;
+    let parsed = parse_or(path, &source)?;
+    let imports = ctx_symbol::extract_imports(&parsed);
+    let file_dir = path.parent().unwrap_or(Path::new("."));
+    let resolved = deps::resolve(
+        &imports,
+        parsed.language.name(),
+        file_dir,
+        &config.paths.ignore,
+    );
+    let file_tokens = tokens(&source);
+    let delivered_tokens: usize = resolved.iter().map(|r| r.bytes / 4).sum();
+    let saved = saved_pct(file_tokens, delivered_tokens);
+
+    if format == Format::Json {
+        let entries: Vec<serde_json::Value> = resolved
+            .iter()
+            .map(|r| json!({ "target": r.target, "kind": r.kind, "line": r.line }))
+            .collect();
+        let mut payload = json!({
+            "schema_version": 1,
+            "tool": "deps",
+            "path": path.display().to_string(),
+            "language": parsed.language.name(),
+            "imports": entries,
+        });
+        if show_saved {
+            payload["saved"] = json!({
+                "tokens_before": file_tokens,
+                "tokens_after": delivered_tokens,
+                "percent": saved,
+            });
+        }
+        println!("{payload}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let header = if show_saved {
+        format!(
+            "# {}  [{} imports, {} -> {} tokens, saved ~{}%]",
+            path.display(),
+            resolved.len(),
+            human_bytes(source.len()),
+            group(delivered_tokens),
+            saved,
+        )
+    } else {
+        format!("# {}  [{} imports]", path.display(), resolved.len())
+    };
+    println!("{header}");
+    if !resolved.is_empty() {
+        let name_w = resolved
+            .iter()
+            .map(|r| r.target.len())
+            .max()
+            .unwrap_or(0)
+            .max(10);
+        for r in &resolved {
+            println!(
+                "  {:<9} {:<name_w$}    L:{}",
+                dep_kind_name(r.kind),
+                r.target,
+                r.line,
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn dep_kind_name(kind: deps::DepKind) -> &'static str {
+    match kind {
+        deps::DepKind::Local => "local",
+        deps::DepKind::External => "external",
+        deps::DepKind::Ignored => "ignored",
+    }
 }
 
 fn read_source(path: &Path) -> Result<String, ExitError> {

@@ -9,6 +9,10 @@ const BIN: &str = env!("CARGO_BIN_EXE_ctxctl");
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.rs");
 const PY_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.py");
 const GO_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.go");
+const DEPS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.rs");
+const DEPS_PY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.py");
+const DEPS_GO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.go");
+const DEPS_TS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.ts");
 
 fn base() -> Command {
     let mut cmd = Command::new(BIN);
@@ -593,4 +597,162 @@ fn output_is_byte_stable() {
     let c = stdout(&run(&["exec", "--json", &cmd]));
     let d = stdout(&run(&["exec", "--json", &cmd]));
     assert_eq!(c, d);
+}
+
+#[test]
+fn deps_rust_text_and_json() {
+    let output = run(&["deps", DEPS_RS]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("4 imports"), "unexpected: {text}");
+    assert!(
+        text.contains("local     crate::lib::helper"),
+        "unexpected: {text}"
+    );
+    assert!(
+        text.contains("external  serde::Deserialize"),
+        "unexpected: {text}"
+    );
+    assert!(text.contains("local     frontend"), "mod import: {text}");
+
+    let json_output = run(&["deps", "--json", DEPS_RS]);
+    let value: Value = serde_json::from_str(&stdout(&json_output)).expect("valid json");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["tool"], "deps");
+    assert_eq!(value["language"], "rust");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("crate::lib::helper".to_string(), "local".to_string()),
+            ("serde::Deserialize".to_string(), "external".to_string()),
+            (
+                "std::collections::HashMap".to_string(),
+                "external".to_string()
+            ),
+            ("frontend".to_string(), "local".to_string()),
+        ]
+    );
+    assert!(value["saved"]["percent"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn deps_python_relative_imports_honor_ignore() {
+    let dir = tmp_dir("deps-py-ignore");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[paths]\nignore = [\"vendor_helpers\"]\n").expect("write config");
+
+    let output = run(&[
+        "deps",
+        "--json",
+        "--config",
+        config.to_str().unwrap(),
+        DEPS_PY,
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "python");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("os".to_string(), "external".to_string()),
+            ("numpy".to_string(), "external".to_string()),
+            ("typing".to_string(), "external".to_string()),
+            (".".to_string(), "local".to_string()),
+            (".vendor_helpers".to_string(), "ignored".to_string()),
+            (".models".to_string(), "local".to_string()),
+            ("myproject.models".to_string(), "external".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn deps_go_local_via_cwd_existence_probe() {
+    let dir = tmp_dir("deps-go-local");
+    std::fs::create_dir_all(dir.join("localpkg/helper")).expect("create dir");
+    std::fs::write(dir.join("localpkg/helper/help.go"), "package helper\n").expect("write file");
+    let output = run_in(&dir, &["deps", "--json", DEPS_GO]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("fmt".to_string(), "external".to_string()),
+            ("embed".to_string(), "external".to_string()),
+            ("github.com/x/y".to_string(), "external".to_string()),
+            ("localpkg/helper".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn deps_typescript_require_and_reexports() {
+    let output = run(&["deps", "--json", DEPS_TS]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "typescript");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("express".to_string(), "external".to_string()),
+            ("./helpers".to_string(), "local".to_string()),
+            ("../lib/util".to_string(), "local".to_string()),
+            ("./types".to_string(), "local".to_string()),
+            ("path".to_string(), "external".to_string()),
+            ("os".to_string(), "external".to_string()),
+            ("./helpers2".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn deps_unsupported_extension_exits_2() {
+    let path = tmp_dir("deps-unsupported").join("nope.xyz");
+    std::fs::write(&path, "whatever").expect("write fixture");
+    let output = run(&["deps", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("unsupported extension"));
 }

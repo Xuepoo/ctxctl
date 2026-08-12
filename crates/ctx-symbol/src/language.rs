@@ -63,6 +63,23 @@ pub trait Language: Send + Sync {
     fn doc_comment(&self, parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
         doc_comment_above(parsed, node)
     }
+
+    /// Node kinds that represent imports. Nodes of these kinds are visited by
+    /// [`crate::imports::extract_imports`] and passed to [`Self::import_target`].
+    fn import_node_types(&self) -> &[&'static str] {
+        &[]
+    }
+
+    /// Derive the import target from an import node (see
+    /// [`Self::import_node_types`]). Return `None` for nodes that are not
+    /// actually imports (e.g. a `require` check on non-require calls).
+    fn import_target(
+        &self,
+        _node: &tree_sitter::Node,
+        _source: &str,
+    ) -> Option<crate::imports::ImportTarget> {
+        None
+    }
 }
 
 /// Parse source text with the grammar for the given path.
