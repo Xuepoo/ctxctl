@@ -7,6 +7,8 @@ use std::process::{Command, Output};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ctxctl");
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.rs");
+const PY_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.py");
+const GO_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.go");
 
 fn base() -> Command {
     let mut cmd = Command::new(BIN);
@@ -127,6 +129,81 @@ fn outline_unsupported_extension_exits_2() {
     let output = run(&["outline", path.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("unsupported extension"));
+}
+
+#[test]
+fn python_outline_text_and_json() {
+    let output = run(&["outline", PY_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("class Point:"), "unexpected: {text}");
+    assert!(
+        text.contains("def add(a: int, b: int) -> int:"),
+        "unexpected: {text}"
+    );
+
+    let json_output = run(&["outline", "--json", PY_FIXTURE]);
+    assert_eq!(json_output.status.code(), Some(0));
+    let value: Value = serde_json::from_str(&stdout(&json_output)).expect("valid json");
+    assert_eq!(value["language"], "python");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Point", "__init__", "norm", "add"]);
+    assert_eq!(value["symbols"][0]["doc_comment"], serde_json::Value::Null);
+    assert_eq!(value["symbols"][1]["doc_comment"], "A point in 2D space.");
+}
+
+#[test]
+fn python_symbol_slices_original_source() {
+    let output = run(&["symbol", PY_FIXTURE, "--name", "norm"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("# norm"), "no locator: {text}");
+    assert!(text.contains("def norm(self)"), "unexpected: {text}");
+    assert!(text.contains("self.x * self.x"), "unexpected: {text}");
+    assert!(!text.contains("class Point"), "slice too wide: {text}");
+}
+
+#[test]
+fn go_outline_and_symbol() {
+    let output = run(&["outline", "--json", GO_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "go");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["Point", "Norm", "Add", "MaxRetries"]);
+    assert_eq!(
+        value["symbols"][1]["doc_comment"],
+        "Norm returns the distance from the origin."
+    );
+
+    let sym = run(&["symbol", GO_FIXTURE, "--name", "Add"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    let text = stdout(&sym);
+    assert!(
+        text.contains("func Add(a, b int) int {"),
+        "unexpected: {text}"
+    );
+    assert!(text.contains("return a + b"), "unexpected: {text}");
+}
+
+#[test]
+fn read_works_on_python_and_go() {
+    let py = run(&["read", PY_FIXTURE, "--lines", "6-8"]);
+    assert_eq!(py.status.code(), Some(0), "stderr: {}", stderr(&py));
+    assert!(stdout(&py).contains("class Point:"));
+    let go = run(&["read", GO_FIXTURE, "--lines", "11-13"]);
+    assert_eq!(go.status.code(), Some(0), "stderr: {}", stderr(&go));
+    assert!(stdout(&go).contains("func (p *Point) Norm() float64 {"));
 }
 
 #[test]

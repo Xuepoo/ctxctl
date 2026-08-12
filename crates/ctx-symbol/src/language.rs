@@ -55,6 +55,14 @@ pub trait Language: Send + Sync {
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         false
     }
+
+    /// Doc comment immediately above the definition node, if any.
+    ///
+    /// Default: a comment-kind sibling scan. Backends with richer comment
+    /// idioms (e.g. Python docstrings) override this.
+    fn doc_comment(&self, parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
+        doc_comment_above(parsed, node)
+    }
 }
 
 /// Parse source text with the grammar for the given path.
@@ -84,6 +92,8 @@ pub fn detect_language(path: &Path) -> Option<&'static dyn Language> {
 pub static REGISTRY: &[&'static dyn Language] = &[
     &crate::lang::rust::RustLang,
     &crate::lang::typescript::TypeScriptLang,
+    &crate::lang::python::PythonLang,
+    &crate::lang::go::GoLang,
 ];
 
 /// True if the node kind is a definition type for the given language.
@@ -108,6 +118,7 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
             let range = node.byte_range();
             let sig = parsed.language.signature(&node, &parsed.source);
             let (start, end) = (node.start_position(), node.end_position());
+            let doc = parsed.language.doc_comment(parsed, &node);
             out.push(Symbol {
                 name,
                 kind: sym_kind,
@@ -115,7 +126,7 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
                 end_line: end.row + 1,
                 byte_range: range,
                 signature: sig,
-                doc_comment: doc_comment_above(parsed, &node),
+                doc_comment: doc,
             });
         }
     }
@@ -129,8 +140,8 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
 
 /// Look one level up in the tree for a doc-comment sibling immediately before
 /// the definition node. Best-effort; backends with richer comment handling can
-/// override via their own walk.
-fn doc_comment_above(parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
+/// override via their own [`Language::doc_comment`].
+pub(crate) fn doc_comment_above(parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
     if !parsed.language.has_doc_comment(node) {
         return None;
     }
@@ -138,8 +149,11 @@ fn doc_comment_above(parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<
     let mut depth = 0;
     while let Some(sib) = prev {
         if sib.kind().contains("comment") {
-            let text = sib.utf8_text(parsed.source.as_bytes()).ok()?.trim();
-            return Some(text.to_string());
+            let text = strip_comment_markers(sib.utf8_text(parsed.source.as_bytes()).ok()?);
+            if text.is_empty() {
+                return None;
+            }
+            return Some(text);
         }
         depth += 1;
         if depth > 2 {
@@ -148,4 +162,33 @@ fn doc_comment_above(parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<
         prev = sib.prev_sibling();
     }
     None
+}
+
+/// Strip comment markers from a doc-comment node's text: `///`/`//!`/`//`,
+/// `/** */`/`/*! */`, or `#`, returning the plain prose.
+fn strip_comment_markers(text: &str) -> String {
+    let t = text.trim();
+    let inner = if t.starts_with("/*") {
+        t.strip_prefix("/*")
+            .unwrap_or(t)
+            .strip_suffix("*/")
+            .unwrap_or(t)
+    } else if let Some(rest) = t.strip_prefix("//") {
+        rest
+    } else if let Some(rest) = t.strip_prefix('#') {
+        rest
+    } else {
+        t
+    };
+    inner
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['*', '/', '!'])
+                .trim()
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
