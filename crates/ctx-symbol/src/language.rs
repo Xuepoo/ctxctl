@@ -56,6 +56,12 @@ pub trait Language: Send + Sync {
         false
     }
 
+    /// Byte range of a definition node; defaults to the node itself.
+    /// Backends extend it to include attached syntax (e.g. python decorators).
+    fn definition_byte_range(&self, node: &tree_sitter::Node) -> std::ops::Range<usize> {
+        node.byte_range()
+    }
+
     /// Doc comment immediately above the definition node, if any.
     ///
     /// Default: a comment-kind sibling scan. Backends with richer comment
@@ -132,7 +138,7 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
     let kind = node.kind();
     if let Some(sym_kind) = is_definition(parsed.language, kind) {
         if let Some(name) = parsed.language.symbol_name(&node, &parsed.source) {
-            let range = node.byte_range();
+            let range = parsed.language.definition_byte_range(&node);
             let sig = parsed.language.signature(&node, &parsed.source);
             let (start, end) = (node.start_position(), node.end_position());
             let doc = parsed.language.doc_comment(parsed, &node);

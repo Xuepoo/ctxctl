@@ -61,6 +61,22 @@ def add(a: int, b: int) -> int:
     return a + b
 "#;
 
+const PY_DECORATED_SAMPLE: &str = r#"
+import functools
+
+def deco(f):
+    return f
+
+@deco
+def decorated(x):
+    return x
+
+"""Processes things."""
+@deco
+def processed(y):
+    return y
+"#;
+
 const GO_SAMPLE: &str = r#"
 // Point is a 2D point.
 type Point struct {
@@ -194,6 +210,23 @@ fn python_byte_range_slices_original_text() {
     assert!(text.contains("def norm(self)"));
     assert!(text.contains("self.x * self.x"));
     assert!(!text.contains("class Point"));
+}
+
+#[test]
+fn python_decorated_definitions_include_decorators() {
+    let symbols = ctx_symbol::outline(PY_DECORATED_SAMPLE, py_path()).unwrap();
+    let decorated = symbols.iter().find(|s| s.name == "decorated").unwrap();
+    let slice = &PY_DECORATED_SAMPLE.as_bytes()[decorated.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(
+        text.starts_with("@deco"),
+        "decorator must be in the slice: {text}"
+    );
+    assert!(text.contains("def decorated(x)"));
+    assert!(!text.contains("def deco(f)"), "slice too wide: {text}");
+    // The docstring above a decorated definition is attached.
+    let processed = symbols.iter().find(|s| s.name == "processed").unwrap();
+    assert_eq!(processed.doc_comment.as_deref(), Some("Processes things."));
 }
 
 #[test]

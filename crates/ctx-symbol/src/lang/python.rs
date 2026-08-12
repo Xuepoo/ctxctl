@@ -56,10 +56,32 @@ impl Language for PythonLang {
         true
     }
 
+    fn definition_byte_range(&self, node: &tree_sitter::Node) -> std::ops::Range<usize> {
+        // A decorated definition (`@deco` lines) wraps the function/class
+        // node; include the decorators so slices carry the full semantics.
+        if node
+            .parent()
+            .is_some_and(|p| p.kind() == "decorated_definition")
+        {
+            return node.parent().unwrap().byte_range();
+        }
+        node.byte_range()
+    }
+
     fn doc_comment(&self, parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
+        // Doc comments sit above the decorated_definition, not the wrapped
+        // function/class node.
+        let effective = if node
+            .parent()
+            .is_some_and(|p| p.kind() == "decorated_definition")
+        {
+            node.parent().unwrap()
+        } else {
+            *node
+        };
         // Python idiom: a string-literal expression statement directly above
         // the definition is the docstring (takes priority over comments).
-        if let Some(prev) = node.prev_sibling() {
+        if let Some(prev) = effective.prev_sibling() {
             if prev.kind() == "expression_statement" {
                 // The module docstring is the first statement of the module;
                 // it documents the module, not the first symbol below it.
