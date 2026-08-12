@@ -653,6 +653,35 @@ fn symbol_subrange_out_of_bounds_exits_2() {
 }
 
 #[test]
+fn csharp_deps_local_probe() {
+    // Demo.Utils resolves to a local package dir under the cwd.
+    let dir = tmp_dir("csharp-local-probe");
+    std::fs::create_dir_all(dir.join("Demo/Utils")).expect("create dirs");
+    std::fs::write(
+        dir.join("Demo/Utils/Helper.cs"),
+        "namespace Demo.Utils { }\n",
+    )
+    .expect("write");
+    let deps = run_in(&dir, &["deps", "--json", DEPS_CS]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports.last(),
+        Some(&("Demo.Utils".to_string(), "local".to_string()))
+    );
+}
+
+#[test]
 fn symbol_subrange_rejects_multiple_ranges() {
     let output = run(&["symbol", FIXTURE, "--name", "add", "--lines", "1-2,4-5"]);
     assert_eq!(output.status.code(), Some(2));

@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   key-wise merge. `[exec]`, `[outline]` (`fold_threshold` text-mode folding),
   `[paths]` (ignore globs for `deps` classification), `[general]` sections.
   JSON envelopes `{schema_version, tool, path, saved}`; exit codes 0-4;
-  byte-stable output targeting provider prompt caching. 78 tests.
+  byte-stable output targeting provider prompt caching. 102 tests.
 
 ## [0.5.6] - 2026-08-12
 
