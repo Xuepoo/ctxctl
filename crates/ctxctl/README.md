@@ -11,7 +11,8 @@ prompt caching applies to repeated reads.
 This crate is the thin `clap` shell over two engine crates:
 
 - `ctx-symbol` — tree-sitter AST symbol location + original-source slicing
-  (Rust, TypeScript, Python, Go, JavaScript, Java backends)
+  (Rust, TypeScript, Python, Go, JavaScript, Java, C, C++, C#, Ruby, Lua
+  backends)
 - `ctx-exec` — rg-rule-driven command output compression
 
 ## Quickstart

@@ -66,6 +66,42 @@ import com.example.util.Helper;
 import java.util.*;
 "#;
 
+const C_IMPORTS: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include "util.h"
+#include "../common/defs.h"
+"#;
+
+const CPP_IMPORTS: &str = r#"
+#include <vector>
+#include "local.hpp"
+using namespace std;
+using std::vector;
+using Alias = int;
+"#;
+
+const CSHARP_IMPORTS: &str = r#"
+using System;
+using System.Collections.Generic;
+using static System.Math;
+using MyApp.Utils;
+"#;
+
+const RUBY_IMPORTS: &str = r#"
+require 'json'
+require "sinatra/base"
+require_relative 'helpers'
+require './local'
+require '../shared/mixins'
+"#;
+
+const LUA_IMPORTS: &str = r#"
+local a = require "json"
+local b = require("socket")
+local c = require './local'
+"#;
+
 fn extract(source: &str, path: &Path) -> Vec<(String, bool, usize)> {
     ctx_symbol::extract_imports(&ctx_symbol::parse(path, source).unwrap())
         .into_iter()
@@ -161,6 +197,76 @@ fn java_extracts_imports_including_static_and_wildcard() {
             ("java.lang.Math".to_string(), false, 5),
             ("com.example.util.Helper".to_string(), false, 6),
             ("java.util".to_string(), false, 7),
+        ]
+    );
+}
+
+#[test]
+fn csharp_extracts_using_directives() {
+    let imports = extract(CSHARP_IMPORTS, Path::new("Sample.cs"));
+    assert_eq!(
+        imports,
+        vec![
+            ("System".to_string(), false, 2),
+            ("System.Collections.Generic".to_string(), false, 3),
+            ("System.Math".to_string(), false, 4),
+            ("MyApp.Utils".to_string(), false, 5),
+        ]
+    );
+}
+
+#[test]
+fn ruby_require_relative_is_local_require_is_external() {
+    let imports = extract(RUBY_IMPORTS, Path::new("sample.rb"));
+    assert_eq!(
+        imports,
+        vec![
+            ("json".to_string(), false, 2),
+            ("sinatra/base".to_string(), false, 3),
+            ("helpers".to_string(), true, 4),
+            ("./local".to_string(), true, 5),
+            ("../shared/mixins".to_string(), true, 6),
+        ]
+    );
+}
+
+#[test]
+fn lua_require_targets_with_path_prefix_are_relative() {
+    let imports = extract(LUA_IMPORTS, Path::new("sample.lua"));
+    assert_eq!(
+        imports,
+        vec![
+            ("json".to_string(), false, 2),
+            ("socket".to_string(), false, 3),
+            ("./local".to_string(), true, 4),
+        ]
+    );
+}
+
+#[test]
+fn c_quoted_includes_are_relative_angle_are_external() {
+    let imports = extract(C_IMPORTS, Path::new("sample.c"));
+    assert_eq!(
+        imports,
+        vec![
+            ("stdio.h".to_string(), false, 2),
+            ("stdlib.h".to_string(), false, 3),
+            ("util.h".to_string(), true, 4),
+            ("../common/defs.h".to_string(), true, 5),
+        ]
+    );
+}
+
+#[test]
+fn cpp_extracts_includes_and_using_declarations() {
+    let imports = extract(CPP_IMPORTS, Path::new("sample.cpp"));
+    assert_eq!(
+        imports,
+        vec![
+            ("vector".to_string(), false, 2),
+            ("local.hpp".to_string(), true, 3),
+            ("std".to_string(), false, 4),
+            ("std::vector".to_string(), false, 5),
         ]
     );
 }

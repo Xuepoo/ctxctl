@@ -108,9 +108,10 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     out
 }
 
-/// True if the line is a bare block closer (`}`, `]`, `)`).
+/// True if the line is a bare block closer (`}`, `]`, `)`, `end`, optionally
+/// followed by `;` as in C/C++ class declarations).
 fn is_closer(line: &str) -> bool {
-    matches!(line.trim(), "}" | "]" | ")")
+    matches!(line.trim().trim_end_matches(';'), "}" | "]" | ")" | "end")
 }
 
 /// True if the line is indented deeper than the reference prefix.

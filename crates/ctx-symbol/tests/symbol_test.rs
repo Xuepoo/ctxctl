@@ -132,6 +132,147 @@ public class App {
 }
 "#;
 
+const C_SAMPLE: &str = r#"
+// Fixture for the C backend.
+#include <stdio.h>
+#include "util.h"
+
+#define MAX_RETRIES 3
+
+/** A 2D point. */
+typedef struct Point {
+    double x;
+    double y;
+} Point;
+
+/** Adds two numbers. */
+int add(int a, int b) {
+    return a + b;
+}
+
+enum Color { RED, GREEN };
+
+static int helper(int v) {
+    return v * 2;
+}
+"#;
+
+const CPP_SAMPLE: &str = r#"
+// Fixture for the C++ backend.
+#include <vector>
+#include "local.hpp"
+
+#define VERSION 2
+
+using namespace std;
+using std::vector;
+using Alias = int;
+
+namespace app {
+/** A widget. */
+template <typename T>
+class Widget {
+public:
+    T value;
+    /** Resets the widget. */
+    void reset() { value = T(); }
+};
+}
+
+/** Computes the sum. */
+template <typename T>
+T sum(T a, T b) {
+    return a + b;
+}
+"#;
+
+const CSHARP_SAMPLE: &str = r#"
+// Fixture for the C# backend.
+using System;
+using System.Collections.Generic;
+using static System.Math;
+
+namespace Demo.App {
+    /// A 2D point.
+    public class Point {
+        private double x;
+        private double y;
+
+        /// Distance from the origin.
+        public double Norm() {
+            return Sqrt(x * x + y * y);
+        }
+    }
+
+    public interface IRepo {
+        List<string> All();
+    }
+
+    public record Pair(int A, int B);
+
+    public enum Status { On, Off }
+
+    public struct Vector2 {
+        public double X;
+    }
+}
+"#;
+
+const RUBY_SAMPLE: &str = r#"
+# Fixture for the ruby backend.
+require 'json'
+require_relative 'helpers'
+require './local'
+
+# A user entity.
+class User
+  # Says hello.
+  def greet(name)
+    "hi #{name}"
+  end
+
+  def self.build
+    User.new
+  end
+end
+
+# Computes a sum.
+def add(a, b)
+  a + b
+end
+
+module Utils
+  def normalize(x)
+    x.to_f
+  end
+end
+"#;
+
+const LUA_SAMPLE: &str = r#"
+-- Fixture for the lua backend.
+local json = require "json"
+local helpers = require("./helpers")
+
+-- A counter.
+local Counter = {}
+Counter.__index = Counter
+
+function Counter.new()
+  return setmetatable({ n = 0 }, Counter)
+end
+
+-- Adds two numbers.
+local function add(a, b)
+  return a + b
+end
+
+function Counter:increment()
+  self.n = self.n + 1
+end
+
+local MAX_RETRIES = 3
+"#;
+
 const GO_SAMPLE: &str = r#"
 // Point is a 2D point.
 type Point struct {
@@ -176,6 +317,26 @@ fn js_path() -> &'static Path {
 
 fn java_path() -> &'static Path {
     Path::new("Sample.java")
+}
+
+fn c_path() -> &'static Path {
+    Path::new("sample.c")
+}
+
+fn cpp_path() -> &'static Path {
+    Path::new("sample.cpp")
+}
+
+fn csharp_path() -> &'static Path {
+    Path::new("Sample.cs")
+}
+
+fn ruby_path() -> &'static Path {
+    Path::new("sample.rb")
+}
+
+fn lua_path() -> &'static Path {
+    Path::new("sample.lua")
 }
 
 #[test]
@@ -243,6 +404,139 @@ fn compact_keeps_python_decorators_and_signature() {
         !reparsed.tree.root_node().has_error(),
         "compact must re-parse: {compact}"
     );
+}
+
+#[test]
+fn c_extracts_functions_types_enums_consts_and_fields() {
+    let symbols = ctx_symbol::outline(C_SAMPLE, c_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["MAX_RETRIES", "Point", "x", "y", "add", "Color", "helper"]
+    );
+    assert_eq!(symbols[0].kind, ctx_symbol::SymbolKind::Const);
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Type);
+    assert_eq!(symbols[4].kind, ctx_symbol::SymbolKind::Function);
+    assert_eq!(symbols[5].kind, ctx_symbol::SymbolKind::Enum);
+    assert_eq!(symbols[1].doc_comment.as_deref(), Some("A 2D point."));
+    // the typedef captures Point once (no duplicate struct_specifier)
+    assert_eq!(names.iter().filter(|n| **n == "Point").count(), 1);
+    // slicing works through the declarator chain
+    let add = symbols.iter().find(|s| s.name == "add").unwrap();
+    let slice = &C_SAMPLE.as_bytes()[add.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("int add(int a, int b)"));
+    assert!(text.contains("return a + b;"));
+    assert!(!text.contains("enum Color"));
+}
+
+#[test]
+fn cpp_extracts_classes_namespaces_and_templates() {
+    let symbols = ctx_symbol::outline(CPP_SAMPLE, cpp_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["VERSION", "app", "Widget", "value", "reset", "sum"]
+    );
+    assert_eq!(symbols[2].kind, ctx_symbol::SymbolKind::Class);
+    assert_eq!(symbols[3].kind, ctx_symbol::SymbolKind::Variable);
+    assert_eq!(symbols[5].kind, ctx_symbol::SymbolKind::Function);
+    // template headers are included in the range (like python decorators)
+    let widget = symbols.iter().find(|s| s.name == "Widget").unwrap();
+    let slice = &CPP_SAMPLE.as_bytes()[widget.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(
+        text.starts_with("template <typename T>"),
+        "template header must be in the slice: {text}"
+    );
+    assert!(text.contains("class Widget"));
+    assert_eq!(widget.doc_comment.as_deref(), Some("A widget."));
+    // compact view keeps the template header and re-parses
+    let parsed = ctx_symbol::parse(cpp_path(), CPP_SAMPLE).unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, widget);
+    assert!(compact.starts_with("template <typename T>"));
+    let reparsed = ctx_symbol::parse(cpp_path(), &compact).unwrap();
+    assert!(!reparsed.tree.root_node().has_error(), "compact: {compact}");
+}
+
+#[test]
+fn csharp_extracts_types_methods_properties_and_fields() {
+    let symbols = ctx_symbol::outline(CSHARP_SAMPLE, csharp_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "Demo.App", "Point", "x", "y", "Norm", "IRepo", "All", "Pair", "Status", "Vector2",
+            "X",
+        ]
+    );
+    assert_eq!(symbols[0].kind, ctx_symbol::SymbolKind::Type); // namespace
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Class);
+    assert_eq!(symbols[2].kind, ctx_symbol::SymbolKind::Variable);
+    assert_eq!(symbols[5].kind, ctx_symbol::SymbolKind::Interface);
+    assert_eq!(symbols[7].kind, ctx_symbol::SymbolKind::Class); // record
+    assert_eq!(symbols[8].kind, ctx_symbol::SymbolKind::Enum);
+    assert_eq!(symbols[9].kind, ctx_symbol::SymbolKind::Struct);
+    assert_eq!(symbols[1].doc_comment.as_deref(), Some("A 2D point."));
+    let norm = symbols.iter().find(|s| s.name == "Norm").unwrap();
+    let slice = &CSHARP_SAMPLE.as_bytes()[norm.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("Sqrt(x * x + y * y)"));
+    assert!(!text.contains("class Point"));
+}
+
+#[test]
+fn ruby_extracts_methods_classes_modules_and_docs() {
+    let symbols = ctx_symbol::outline(RUBY_SAMPLE, ruby_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["User", "greet", "build", "add", "Utils", "normalize"]
+    );
+    assert_eq!(symbols[0].kind, ctx_symbol::SymbolKind::Class);
+    assert_eq!(symbols[1].kind, ctx_symbol::SymbolKind::Function);
+    assert_eq!(symbols[4].kind, ctx_symbol::SymbolKind::Type); // module
+    assert_eq!(symbols[0].doc_comment.as_deref(), Some("A user entity."));
+    let greet = symbols.iter().find(|s| s.name == "greet").unwrap();
+    let slice = &RUBY_SAMPLE.as_bytes()[greet.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("def greet(name)"));
+    assert!(text.contains("\"hi #{name}\""));
+    assert!(!text.contains("class User"));
+}
+
+#[test]
+fn lua_extracts_functions_and_variables() {
+    let symbols = ctx_symbol::outline(LUA_SAMPLE, lua_path()).unwrap();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "json",
+            "helpers",
+            "Counter",
+            "Counter.new",
+            "add",
+            "Counter:increment",
+            "MAX_RETRIES",
+        ]
+    );
+    assert_eq!(symbols[0].kind, ctx_symbol::SymbolKind::Variable);
+    assert_eq!(symbols[4].kind, ctx_symbol::SymbolKind::Function);
+    assert_eq!(symbols[4].doc_comment.as_deref(), Some("Adds two numbers."));
+    // `function Counter.new()` -> name keeps the dotted path
+    let new = symbols.iter().find(|s| s.name == "Counter.new").unwrap();
+    let slice = &LUA_SAMPLE.as_bytes()[new.byte_range.clone()];
+    let text = std::str::from_utf8(slice).unwrap();
+    assert!(text.contains("function Counter.new()"));
+    // compact view uses -- comments and keeps the end closer
+    let parsed = ctx_symbol::parse(lua_path(), LUA_SAMPLE).unwrap();
+    let add = symbols.iter().find(|s| s.name == "add").unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, add);
+    assert!(compact.contains("-- ... ["), "lua marker: {compact}");
+    assert!(compact.ends_with("end"), "end closer kept: {compact}");
+    let reparsed = ctx_symbol::parse(lua_path(), &compact).unwrap();
+    assert!(!reparsed.tree.root_node().has_error(), "compact: {compact}");
 }
 
 #[test]

@@ -125,6 +125,11 @@ pub static REGISTRY: &[&'static dyn Language] = &[
     &crate::lang::go::GoLang,
     &crate::lang::javascript::JavaScriptLang,
     &crate::lang::java::JavaLang,
+    &crate::lang::c::CLang,
+    &crate::lang::cpp::CppLang,
+    &crate::lang::csharp::CSharpLang,
+    &crate::lang::ruby::RubyLang,
+    &crate::lang::lua::LuaLang,
 ];
 
 /// True if the node kind is a definition type for the given language.
@@ -204,6 +209,8 @@ fn strip_comment_markers(text: &str) -> String {
             .unwrap_or(t)
             .strip_suffix("*/")
             .unwrap_or(t)
+    } else if let Some(rest) = t.strip_prefix("--") {
+        rest
     } else if let Some(rest) = t.strip_prefix("//") {
         rest
     } else if let Some(rest) = t.strip_prefix('#') {

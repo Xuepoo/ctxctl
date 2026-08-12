@@ -15,6 +15,16 @@ const DEPS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.
 const DEPS_PY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.py");
 const DEPS_GO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.go");
 const DEPS_TS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.ts");
+const DEPS_C: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.c");
+const DEPS_CPP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.cpp");
+const DEPS_CS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.cs");
+const DEPS_RB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.rb");
+const DEPS_LUA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/deps.lua");
+const C_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.c");
+const CPP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.cpp");
+const CS_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.cs");
+const RB_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.rb");
+const LUA_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.lua");
 
 fn base() -> Command {
     let mut cmd = Command::new(BIN);
@@ -305,6 +315,258 @@ fn java_outline_symbol_and_deps_local_probe() {
             ("java.util.List".to_string(), "external".to_string()),
             ("java.lang.Math".to_string(), "external".to_string()),
             ("com.example.util.Helper".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn c_outline_symbol_and_deps() {
+    let output = run(&["outline", "--json", C_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "c");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["MAX_RETRIES", "Point", "x", "y", "add", "Color", "helper"]
+    );
+    assert_eq!(value["symbols"][1]["doc_comment"], "A 2D point.");
+
+    let sym = run(&["symbol", C_FIXTURE, "--name", "add"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    let text = stdout(&sym);
+    assert!(text.contains("int add(int a, int b)"), "unexpected: {text}");
+    assert!(text.contains("return a + b;"), "unexpected: {text}");
+    assert!(!text.contains("enum Color"), "slice too wide: {text}");
+
+    // Quoted includes are local, angle includes are external.
+    let deps = run(&["deps", "--json", DEPS_C]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    assert_eq!(value["language"], "c");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("stdio.h".to_string(), "external".to_string()),
+            ("stdlib.h".to_string(), "external".to_string()),
+            ("util.h".to_string(), "local".to_string()),
+            ("../common/defs.h".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn cpp_outline_compact_and_deps() {
+    let output = run(&["outline", "--json", CPP_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "cpp");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["VERSION", "app", "Widget", "value", "reset", "sum"]
+    );
+    assert_eq!(value["symbols"][2]["doc_comment"], "A widget.");
+
+    // compact keeps the template header.
+    let sym = run(&["symbol", CPP_FIXTURE, "--name", "Widget", "--compact"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    let text = stdout(&sym);
+    assert!(text.contains("template <typename T>"), "unexpected: {text}");
+    assert!(text.contains("class Widget"), "unexpected: {text}");
+
+    let deps = run(&["deps", "--json", DEPS_CPP]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("vector".to_string(), "external".to_string()),
+            ("local.hpp".to_string(), "local".to_string()),
+            ("std".to_string(), "external".to_string()),
+            ("std::vector".to_string(), "external".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn csharp_outline_and_deps() {
+    let output = run(&["outline", "--json", CS_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "csharp");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Demo.App", "Point", "x", "y", "Norm", "IRepo", "All", "Pair", "Status", "Vector2", "X"
+        ]
+    );
+
+    let sym = run(&["symbol", CS_FIXTURE, "--name", "Norm"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    assert!(stdout(&sym).contains("Sqrt(x * x + y * y)"));
+
+    let deps = run(&["deps", "--json", DEPS_CS]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("System".to_string(), "external".to_string()),
+            (
+                "System.Collections.Generic".to_string(),
+                "external".to_string()
+            ),
+            ("System.Math".to_string(), "external".to_string()),
+            ("Demo.Utils".to_string(), "external".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn ruby_outline_symbol_and_deps() {
+    let output = run(&["outline", "--json", RB_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "ruby");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["User", "greet", "build", "add", "Utils", "normalize"]
+    );
+    assert_eq!(value["symbols"][0]["doc_comment"], "A user entity.");
+
+    let sym = run(&["symbol", RB_FIXTURE, "--name", "greet"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    assert!(stdout(&sym).contains("def greet(name)"));
+
+    let deps = run(&["deps", "--json", DEPS_RB]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("json".to_string(), "external".to_string()),
+            ("sinatra/base".to_string(), "external".to_string()),
+            ("helpers".to_string(), "local".to_string()),
+            ("./local".to_string(), "local".to_string()),
+            ("../shared/mixins".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn lua_outline_compact_and_deps() {
+    let output = run(&["outline", "--json", LUA_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["language"], "lua");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "json",
+            "helpers",
+            "Counter",
+            "Counter.new",
+            "add",
+            "Counter:increment",
+            "MAX_RETRIES"
+        ]
+    );
+
+    // compact uses -- markers and keeps the end closer.
+    let sym = run(&["symbol", LUA_FIXTURE, "--name", "add", "--compact"]);
+    assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
+    let text = stdout(&sym);
+    assert!(text.contains("-- ... ["), "lua marker: {text}");
+    assert!(text.contains("end"), "end closer: {text}");
+
+    let deps = run(&["deps", "--json", DEPS_LUA]);
+    let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("json".to_string(), "external".to_string()),
+            ("socket".to_string(), "external".to_string()),
+            ("./local".to_string(), "local".to_string()),
         ]
     );
 }
