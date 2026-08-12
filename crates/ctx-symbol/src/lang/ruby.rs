@@ -57,6 +57,23 @@ impl Language for RubyLang {
         "#"
     }
 
+    fn is_opener_line(&self, line: &str) -> bool {
+        // Ruby blocks open with keywords, not braces: `def`, `class`,
+        // `module`, `if`, `unless`, `begin`, `while`, `until`, `for`,
+        // `do`. `case` is deliberately excluded: it requires a `when`
+        // before its `end`, which a fold marker cannot satisfy.
+        let t = line.trim();
+        [
+            "def ", "class ", "module ", "if ", "unless ", "begin", "while ", "until ", "for ",
+            "do ",
+        ]
+        .iter()
+        .any(|k| t.starts_with(k))
+            || t == "begin"
+            || t == "do"
+            || t.starts_with("class <<")
+    }
+
     fn import_node_types(&self) -> &[&'static str] {
         &["call"]
     }

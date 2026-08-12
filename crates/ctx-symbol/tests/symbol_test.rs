@@ -378,7 +378,8 @@ fn compact_is_smaller_and_parseable() {
     assert!(compact.len() < raw.len(), "compact must be smaller");
     assert!(compact.starts_with("pub async fn handle_request"));
     assert!(compact.contains("// ... ["));
-    assert!(compact.ends_with('}'));
+    assert!(compact.trim_end().ends_with('}'));
+    assert!(compact.ends_with('\n'), "compact must end with a newline");
     // Re-parse without errors: the fold marker is a line comment.
     let reparsed = ctx_symbol::parse(rust_path(), &compact).unwrap();
     assert!(
@@ -534,7 +535,10 @@ fn lua_extracts_functions_and_variables() {
     let add = symbols.iter().find(|s| s.name == "add").unwrap();
     let compact = ctx_symbol::compact_symbol(&parsed, add);
     assert!(compact.contains("-- ... ["), "lua marker: {compact}");
-    assert!(compact.ends_with("end"), "end closer kept: {compact}");
+    assert!(
+        compact.trim_end().ends_with("end"),
+        "end closer kept: {compact}"
+    );
     let reparsed = ctx_symbol::parse(lua_path(), &compact).unwrap();
     assert!(!reparsed.tree.root_node().has_error(), "compact: {compact}");
 }
@@ -616,6 +620,151 @@ typedef struct {
             assert!(compact.contains("... ["), "{} folded: {compact}", s.name);
         }
     }
+}
+
+/// Helper: compact every multi-line symbol of `src` and assert the compact
+/// re-parses whenever the raw slice does (the corpus regression criterion).
+fn assert_compacts_reparse(src: &str, path: &Path) {
+    let parsed = ctx_symbol::parse(path, src).unwrap();
+    for s in ctx_symbol::extract_symbols(&parsed) {
+        let raw = std::str::from_utf8(&src.as_bytes()[s.byte_range.clone()]).unwrap();
+        let raw_ok = ctx_symbol::parse(path, raw)
+            .map(|r| !r.tree.root_node().has_error())
+            .unwrap_or(false);
+        if !raw_ok {
+            continue;
+        }
+        let compact = ctx_symbol::compact_symbol(&parsed, &s);
+        let re_ok = ctx_symbol::parse(path, &compact)
+            .map(|r| !r.tree.root_node().has_error())
+            .unwrap_or(false);
+        assert!(re_ok, "{} compact: {compact}", s.name);
+    }
+}
+
+#[test]
+fn compact_preproc_macro_drops_closer() {
+    // A `\`-continued macro: the fold marker splices into the directive, so
+    // the `} while (0)` closer must not be kept outside it.
+    let src = r#"
+#define CLEANUP(x) \
+  do { int r = (x); \
+       if (r) return r; \
+  } while (0)
+
+#define CAT(a, b) a##b
+"#;
+    let parsed = ctx_symbol::parse(c_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    assert!(symbols.len() >= 2);
+    for s in symbols {
+        let compact = ctx_symbol::compact_symbol(&parsed, &s);
+        if s.name == "CLEANUP" {
+            assert!(compact.trim_end().ends_with(']'), "macro: {compact}");
+        }
+        let re = ctx_symbol::parse(c_path(), &compact).unwrap();
+        assert!(!re.tree.root_node().has_error(), "macro: {compact}");
+    }
+}
+
+#[test]
+fn compact_slides_past_expression_continuations() {
+    // go var with `+` continuations: folding mid-expression would orphan
+    // the `+`; the compact must pass the whole declaration through.
+    let src = r#"
+var repeatedSpaces = "" +
+	strings.Repeat(" ", 256) +
+	strings.Repeat(" ", 256)
+
+var x = f(1, 2)
+"#;
+    let parsed = ctx_symbol::parse(go_path(), src).unwrap();
+    for sym in ctx_symbol::extract_symbols(&parsed) {
+        let compact = ctx_symbol::compact_symbol(&parsed, &sym);
+        let re = ctx_symbol::parse(go_path(), &compact).unwrap();
+        assert!(!re.tree.root_node().has_error(), "{}: {compact}", sym.name);
+    }
+    let parsed = ctx_symbol::parse(go_path(), src).unwrap();
+    let repeated = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "repeatedSpaces")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &repeated);
+    assert!(
+        compact.contains("strings.Repeat"),
+        "continuations must not be folded: {compact}"
+    );
+}
+
+#[test]
+fn compact_ruby_predicate_and_case_fold() {
+    let src = r#"
+def loopback?
+    case @family
+    when Socket::AF_INET
+      @addr[0] == 127
+    else
+      false
+    end
+  end
+
+def simple(a)
+  a + 1
+end
+"#;
+    assert_compacts_reparse(src, ruby_path());
+    let parsed = ctx_symbol::parse(ruby_path(), src).unwrap();
+    let loopback = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "loopback?")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &loopback);
+    assert!(compact.starts_with("def loopback?"), "{compact}");
+    assert!(compact.contains("# ... ["), "{compact}");
+    assert!(compact.trim_end().ends_with("end"), "{compact}");
+}
+
+#[test]
+fn compact_java_annotation_prefix_folds_class_body() {
+    let src = r#"
+@ContextConfiguration(
+  classes = {
+    WireMockConfig.class,
+  }
+)
+class Foo {
+  int x;
+  int bar() { return x; }
+}
+"#;
+    let parsed = ctx_symbol::parse(java_path(), src).unwrap();
+    let foo = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "Foo")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &foo);
+    assert!(compact.starts_with("@ContextConfiguration("), "{compact}");
+    assert!(compact.contains("class Foo {"), "{compact}");
+    let re = ctx_symbol::parse(java_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact}");
+}
+
+#[test]
+fn compact_js_template_literal_passes_through() {
+    let src = r#"
+const help = () => console.log(
+`line one
+line two`);
+"#;
+    let parsed = ctx_symbol::parse(js_path(), src).unwrap();
+    let sym = &ctx_symbol::extract_symbols(&parsed)[0];
+    let compact = ctx_symbol::compact_symbol(&parsed, sym);
+    let re = ctx_symbol::parse(js_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact}");
+    assert!(
+        compact.contains("line two"),
+        "template must not fold: {compact}"
+    );
 }
 
 #[test]
