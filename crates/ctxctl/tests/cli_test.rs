@@ -614,7 +614,7 @@ fn deps_rust_text_and_json() {
     let output = run(&["deps", DEPS_RS]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let text = stdout(&output);
-    assert!(text.contains("4 imports"), "unexpected: {text}");
+    assert!(text.contains("5 imports"), "unexpected: {text}");
     assert!(
         text.contains("local     crate::lib::helper"),
         "unexpected: {text}"
@@ -624,6 +624,10 @@ fn deps_rust_text_and_json() {
         "unexpected: {text}"
     );
     assert!(text.contains("local     frontend"), "mod import: {text}");
+    assert!(
+        text.contains("local     frontend::api"),
+        "use of a same-file mod must be local: {text}"
+    );
 
     let json_output = run(&["deps", "--json", DEPS_RS]);
     let value: Value = serde_json::from_str(&stdout(&json_output)).expect("valid json");
@@ -644,13 +648,14 @@ fn deps_rust_text_and_json() {
     assert_eq!(
         imports,
         vec![
+            ("frontend".to_string(), "local".to_string()),
             ("crate::lib::helper".to_string(), "local".to_string()),
+            ("frontend::api".to_string(), "local".to_string()),
             ("serde::Deserialize".to_string(), "external".to_string()),
             (
                 "std::collections::HashMap".to_string(),
                 "external".to_string()
             ),
-            ("frontend".to_string(), "local".to_string()),
         ]
     );
     assert!(value["saved"]["percent"].as_u64().unwrap() > 0);

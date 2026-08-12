@@ -6,6 +6,7 @@
 //! No network, no index — stateless per invocation.
 
 use ctx_symbol::Import;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// How an import target relates to the workspace.
@@ -38,18 +39,31 @@ pub fn resolve(
     file_dir: &Path,
     ignore: &[String],
 ) -> Vec<ResolvedImport> {
+    // Rust `mod x;` declarations are local modules; a `use x::y` whose first
+    // segment matches one of them resolves in-crate.
+    let local_mods: HashSet<String> = imports
+        .iter()
+        .filter(|i| language == "rust" && i.relative && !i.target.contains("::"))
+        .map(|i| i.target.clone())
+        .collect();
     imports
         .iter()
         .map(|imp| ResolvedImport {
             target: imp.target.clone(),
-            kind: classify(imp, language, file_dir, ignore),
+            kind: classify(imp, language, file_dir, ignore, &local_mods),
             line: imp.line,
             bytes: imp.byte_range.len(),
         })
         .collect()
 }
 
-fn classify(imp: &Import, language: &str, file_dir: &Path, ignore: &[String]) -> DepKind {
+fn classify(
+    imp: &Import,
+    language: &str,
+    file_dir: &Path,
+    ignore: &[String],
+    local_mods: &HashSet<String>,
+) -> DepKind {
     if imp.relative {
         // Rust in-crate paths are always local (no dir-walking involved).
         if language == "rust" {
@@ -75,9 +89,17 @@ fn classify(imp: &Import, language: &str, file_dir: &Path, ignore: &[String]) ->
         };
     }
 
-    // Bare targets: ignore globs first, then existence probes for python/go.
+    // Bare targets: ignore globs first, then rust in-crate modules, then
+    // existence probes for python/go.
     if is_ignored(&imp.target, ignore) {
         return DepKind::Ignored;
+    }
+    if language == "rust" {
+        if let Some(first) = imp.target.split("::").next() {
+            if local_mods.contains(first) {
+                return DepKind::Local;
+            }
+        }
     }
     if matches!(language, "python" | "go") {
         for candidate in existence_candidates(language, &imp.target) {
