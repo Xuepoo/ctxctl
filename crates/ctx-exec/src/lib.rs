@@ -184,34 +184,31 @@ fn saved_pct(original: usize, compressed: usize) -> u32 {
     ((original - compressed.min(original)) * 100 / original) as u32
 }
 
-/// Case-insensitive matcher over the default patterns plus user patterns.
+/// Case-insensitive matcher over the keep patterns, compiled individually so
+/// per-pattern anchoring and capture semantics survive. An empty pattern list
+/// matches nothing — it must not degrade to a match-everything regex.
 struct KeepMatcher {
-    regex: Regex,
+    patterns: Vec<Regex>,
 }
 
 impl KeepMatcher {
     fn new(options: &CompressOptions) -> Result<Self, ExecError> {
+        let mut patterns = Vec::with_capacity(options.keep_patterns.len());
         for pattern in &options.keep_patterns {
-            RegexBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .map_err(|e| ExecError::InvalidPattern {
-                    pattern: pattern.clone(),
-                    message: e.to_string(),
-                })?;
+            patterns.push(
+                RegexBuilder::new(pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .map_err(|e| ExecError::InvalidPattern {
+                        pattern: pattern.clone(),
+                        message: e.to_string(),
+                    })?,
+            );
         }
-        let joined = options.keep_patterns.join("|");
-        let regex = RegexBuilder::new(&joined)
-            .case_insensitive(true)
-            .build()
-            .map_err(|e| ExecError::InvalidPattern {
-                pattern: joined,
-                message: e.to_string(),
-            })?;
-        Ok(Self { regex })
+        Ok(Self { patterns })
     }
 
     fn is_match(&self, line: &str) -> bool {
-        self.regex.is_match(line)
+        self.patterns.iter().any(|re| re.is_match(line))
     }
 }

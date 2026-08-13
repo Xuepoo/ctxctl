@@ -178,3 +178,36 @@ fn saved_percent_is_zero_for_passthrough() {
     let result = compress(&input, &opts()).unwrap();
     assert_eq!(result.stats.saved_percent, 0);
 }
+
+#[test]
+fn empty_keep_list_matches_nothing() {
+    let mut input = lines(12, "l");
+    input.push_str("\nthis line must be omitted\n");
+    input.push_str(&lines(12, "m"));
+
+    let mut custom = opts();
+    custom.keep_patterns.clear();
+    let result = compress(&input, &custom).unwrap();
+    assert!(!result.text.contains("this line must be omitted"));
+    assert_eq!(
+        result.stats.kept_lines,
+        DEFAULT_HEAD_LINES + DEFAULT_TAIL_LINES
+    );
+}
+
+#[test]
+fn per_pattern_anchors_survive_individual_compilation() {
+    // `^PASS` must not match mid-line occurrences, even when combined with
+    // other patterns.
+    let mut input = lines(12, "l");
+    input.push_str("\nxxPASSxx\n");
+    input.push_str("PASS: real hit\n");
+    input.push_str(&lines(12, "m"));
+
+    let mut custom = opts();
+    custom.keep_patterns.clear();
+    custom.keep_patterns.push("^PASS".to_string());
+    let result = compress(&input, &custom).unwrap();
+    assert!(!result.text.contains("xxPASSxx"), "unanchored match leaked");
+    assert!(result.text.contains("PASS: real hit"));
+}
