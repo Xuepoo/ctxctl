@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 
+- **Streaming `exec` (memory-bounded)** — child output is compressed
+  incrementally; memory is O(head + tail + kept matches) instead of O(total
+  output). A 600 MB output peaks at ~29 MB RSS. Rendered output stays
+  byte-identical to the previous buffered algorithm (stdout-then-stderr
+  merge preserved).
 - **Real token accounting** — `saved%` metrics now use the cl100k_base BPE
   tokenizer (GPT-4-class) instead of the 4-bytes-per-token approximation;
   CJK-heavy text is counted accurately and counts stay a deterministic
