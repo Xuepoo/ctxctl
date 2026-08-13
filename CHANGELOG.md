@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 
+- **Parallel parse + token counting** — `outline`/`symbol`/`deps` overlap
+  tree-sitter parsing with the cl100k token count on a second thread
+  (deterministic; both are pure functions of the input). ~33% faster on
+  multi-megabyte files.
 - **Streaming `exec` (memory-bounded)** — child output is compressed
   incrementally; memory is O(head + tail + kept matches) instead of O(total
   output). A 600 MB output peaks at ~29 MB RSS. Rendered output stays
