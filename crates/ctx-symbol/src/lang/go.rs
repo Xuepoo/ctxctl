@@ -20,7 +20,7 @@ impl Language for GoLang {
     }
 
     fn body_node_kinds(&self) -> &[&'static str] {
-        &["block", "field_declaration_list"]
+        &["block", "field_declaration_list", "literal_value"]
     }
 
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {

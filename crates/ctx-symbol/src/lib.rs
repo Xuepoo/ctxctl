@@ -581,6 +581,13 @@ fn boundary_continues(
     in_preproc: bool,
 ) -> bool {
     let prefix = parsed.language.comment_prefix();
+    // A multi-line string literal (js template, python docstring, go raw
+    // string) cannot be folded through — the marker would land inside it.
+    // Checked before the comment-prefix rule: `//`-looking content lines
+    // inside a raw string are string data, not comments.
+    if prev_in_string {
+        return true;
+    }
     if prev.trim_start().starts_with(prefix) {
         return false;
     }
@@ -592,11 +599,6 @@ fn boundary_continues(
         tokens[14] = '\0';
     }
     if prev.ends_with(tokens) {
-        return true;
-    }
-    // A multi-line string literal (js template, python docstring, go raw
-    // string) cannot be folded through — the marker would land inside it.
-    if prev_in_string {
         return true;
     }
     // An open `(`/`[` pending across the boundary (multi-line annotations,
