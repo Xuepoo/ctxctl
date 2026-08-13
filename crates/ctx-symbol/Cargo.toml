@@ -19,5 +19,4 @@ tree-sitter-c-sharp.workspace = true
 tree-sitter-ruby.workspace = true
 tree-sitter-lua.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror = "2"

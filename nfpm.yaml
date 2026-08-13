@@ -1,11 +1,12 @@
 name: "ctxctl"
 arch: "amd64"
 platform: "linux"
+# Version is synced from Cargo.toml by the release workflow.
 version: "0.1.0"
 section: "default"
 priority: "optional"
 maintainer: "fuyu"
-description: "Token-efficient context layer for coding agents"
+description: "Pure CLI, zero-MCP, stateless context layer for AI coding agents"
 license: "MIT"
 contents:
   - src: ./ctxctl-linux-x86_64

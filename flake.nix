@@ -1,5 +1,5 @@
 {
-  description = "CtxCtl - Project context for coding agents";
+  description = "CtxCtl - pure CLI, zero-MCP, stateless context layer for AI coding agents";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -12,16 +12,13 @@
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
-        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
           extensions = [ "rustfmt" "clippy" ];
         };
       in {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             rustToolchain
-            pkg-config
-            openssl
-            sqlite
 
             # Tooling
             just

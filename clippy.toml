@@ -1,5 +1,5 @@
-# Clippy configuration for CarryCtx
+# Clippy configuration for CtxCtl
 
-msrv = "1.85"
+msrv = "1.97"
 cognitive-complexity-threshold = 25
 upper-case-acronyms-aggressive = true
