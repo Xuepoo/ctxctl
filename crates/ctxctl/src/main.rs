@@ -44,6 +44,11 @@ struct Cli {
     /// Suppress saved% metrics.
     #[arg(long, global = true)]
     no_saved: bool,
+    /// Write the full payload to this file instead of stdout (bypasses
+    /// stdout size limits on large outputs); a confirmation is printed to
+    /// stderr.
+    #[arg(long, value_name = "PATH", global = true)]
+    output: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -52,6 +57,52 @@ struct Cli {
 enum Format {
     Text,
     Json,
+}
+
+/// Symbol kinds accepted by `symbol --kind`. Values match the outline JSON
+/// contract's `kind` field exactly (e.g. `var`, not `variable`).
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum SymbolKindArg {
+    #[value(name = "class")]
+    Class,
+    #[value(name = "struct")]
+    Struct,
+    #[value(name = "enum")]
+    Enum,
+    #[value(name = "interface")]
+    Interface,
+    #[value(name = "function")]
+    Function,
+    #[value(name = "method")]
+    Method,
+    #[value(name = "module")]
+    Module,
+    #[value(name = "const")]
+    Const,
+    #[value(name = "var")]
+    Variable,
+    #[value(name = "trait")]
+    Trait,
+    #[value(name = "type")]
+    Type,
+}
+
+impl SymbolKindArg {
+    fn to_symbol_kind(self) -> ctx_symbol::SymbolKind {
+        match self {
+            SymbolKindArg::Class => ctx_symbol::SymbolKind::Class,
+            SymbolKindArg::Struct => ctx_symbol::SymbolKind::Struct,
+            SymbolKindArg::Enum => ctx_symbol::SymbolKind::Enum,
+            SymbolKindArg::Interface => ctx_symbol::SymbolKind::Interface,
+            SymbolKindArg::Function => ctx_symbol::SymbolKind::Function,
+            SymbolKindArg::Method => ctx_symbol::SymbolKind::Method,
+            SymbolKindArg::Module => ctx_symbol::SymbolKind::Module,
+            SymbolKindArg::Const => ctx_symbol::SymbolKind::Const,
+            SymbolKindArg::Variable => ctx_symbol::SymbolKind::Variable,
+            SymbolKindArg::Trait => ctx_symbol::SymbolKind::Trait,
+            SymbolKindArg::Type => ctx_symbol::SymbolKind::Type,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -74,6 +125,10 @@ enum Command {
         /// Symbol name (exact).
         #[arg(long)]
         name: String,
+        /// Restrict the match to a symbol kind (class, method, variable, …).
+        /// Without it, the first same-name symbol in source order wins.
+        #[arg(long, value_enum)]
+        kind: Option<SymbolKindArg>,
         /// Return the signature only, not the body.
         #[arg(long, conflicts_with = "compact")]
         signature: bool,
@@ -154,52 +209,78 @@ fn main() -> ExitCode {
     }
 }
 
+/// Shared output routing: format, metrics toggle, and the `--output` target.
+struct OutputCtx<'a> {
+    format: Format,
+    show_saved: bool,
+    output: Option<&'a Path>,
+}
+
 fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
     let config = config::load(cli.config.as_deref()).map_err(|e| ExitError::new(1, e))?;
-    let format = if cli.json { Format::Json } else { cli.format };
-    let show_saved = config.general.show_saved && !cli.no_saved;
+    let ctx = OutputCtx {
+        format: if cli.json { Format::Json } else { cli.format },
+        show_saved: config.general.show_saved && !cli.no_saved,
+        output: cli.output.as_deref(),
+    };
     match &cli.command {
         Command::Outline {
             file,
             no_doc,
             no_lines,
-        } => run_outline(file, *no_doc, *no_lines, format, show_saved, &config),
+        } => run_outline(file, *no_doc, *no_lines, &ctx, &config),
         Command::Symbol {
             file,
             name,
+            kind,
             signature,
             compact,
             lines,
         } => run_symbol(
             file,
             name,
+            kind.map(SymbolKindArg::to_symbol_kind),
             *signature,
             *compact,
             lines.as_deref(),
-            format,
-            show_saved,
+            &ctx,
         ),
-        Command::Read { file, lines } => run_read(file, lines, format, show_saved),
-        Command::Deps { file } => run_deps(file, format, show_saved, &config),
+        Command::Read { file, lines } => run_read(file, lines, &ctx),
+        Command::Deps { file } => run_deps(file, &ctx, &config),
         Command::Exec {
             cmd,
             keep,
             head,
             tail,
-        } => run_exec(cmd, keep, *head, *tail, format, show_saved, &config),
+        } => run_exec(cmd, keep, *head, *tail, &ctx, &config),
     }
+}
+
+/// Deliver the final payload: `--output` writes it to a file (bypassing
+/// stdout size limits; a confirmation goes to stderr), otherwise it is
+/// printed to stdout. The file receives exactly the stdout bytes.
+fn deliver(text: &str, output: Option<&Path>) -> Result<(), ExitError> {
+    match output {
+        Some(path) => {
+            std::fs::write(path, text).map_err(|e| {
+                ExitError::new(1, format!("failed to write {}: {e}", path.display()))
+            })?;
+            eprintln!("wrote {}", path.display());
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
 }
 
 fn run_outline(
     path: &Path,
     no_doc: bool,
     no_lines: bool,
-    format: Format,
-    show_saved: bool,
+    ctx: &OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
-    let (parsed, file_tokens) = parse_and_tokens(path, &source, show_saved)?;
+    let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let symbols = ctx_symbol::extract_symbols(&parsed);
     let show_doc = config.outline.show_doc && !no_doc;
@@ -212,7 +293,7 @@ fn run_outline(
     let parse_errors = ctx_symbol::parse_error_count(&parsed);
     let parse_failed = parse_errors > 0;
 
-    if format == Format::Json {
+    if ctx.format == Format::Json {
         let entries: Vec<serde_json::Value> = symbols
             .iter()
             .map(|s| symbol_entry(s, !show_doc, no_lines))
@@ -230,7 +311,7 @@ fn run_outline(
                 "message": "tree-sitter reported syntax errors; symbol list may be incomplete",
             });
         }
-        if show_saved {
+        if ctx.show_saved {
             // `tokens_after` counts the bytes actually delivered (the
             // serialized payload), not a sum of symbol slice estimates.
             let delivered_tokens = tokens(&payload.to_string());
@@ -240,7 +321,7 @@ fn run_outline(
                 "percent": saved_pct(file_tokens, delivered_tokens),
             });
         }
-        println!("{payload}");
+        deliver(&format!("{payload}\n"), ctx.output)?;
         return Ok(if parse_failed {
             ExitCode::from(3)
         } else {
@@ -295,7 +376,7 @@ fn run_outline(
     // to be double-counted, inflating the estimate beyond the file itself.
     let delivered_tokens = tokens(&body);
     let saved = saved_pct(file_tokens, delivered_tokens);
-    let header = if show_saved {
+    let header = if ctx.show_saved {
         format!(
             "# {}  [{} symbols, {} -> {} tokens, saved ~{}%]",
             path.display(),
@@ -307,7 +388,7 @@ fn run_outline(
     } else {
         format!("# {}  [{} symbols]", path.display(), symbols.len())
     };
-    print!("{header}\n{body}");
+    deliver(&format!("{header}\n{body}"), ctx.output)?;
     if parse_failed {
         eprintln!(
             "warning: parse failed ({} error node(s)); symbol list may be incomplete",
@@ -324,20 +405,27 @@ fn run_outline(
 fn run_symbol(
     path: &Path,
     name: &str,
+    kind: Option<ctx_symbol::SymbolKind>,
     signature_only: bool,
     compact: bool,
     subrange: Option<&str>,
-    format: Format,
-    show_saved: bool,
+    ctx: &OutputCtx,
 ) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
-    let (parsed, file_tokens) = parse_and_tokens(path, &source, show_saved)?;
+    let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let symbols = ctx_symbol::extract_symbols(&parsed);
     let symbol = symbols
         .iter()
+        .filter(|s| kind.is_none_or(|k| s.kind == k))
         .find(|s| s.name == name)
-        .ok_or_else(|| ExitError::new(4, format!("symbol not found: {name}")))?;
+        .ok_or_else(|| {
+            let hint = match kind {
+                Some(k) => format!(" (kind {:?})", k),
+                None => String::new(),
+            };
+            ExitError::new(4, format!("symbol not found: {name}{hint}"))
+        })?;
     let body = slice_text(&source, &symbol.byte_range)?;
     let slice = if compact {
         ctx_symbol::compact_symbol(&parsed, symbol)
@@ -351,7 +439,7 @@ fn run_symbol(
     let delivered_tokens = tokens(&slice);
     let saved = saved_pct(file_tokens, delivered_tokens);
 
-    if format == Format::Json {
+    if ctx.format == Format::Json {
         let mut payload = json!({
             "schema_version": 1,
             "tool": "symbol",
@@ -365,14 +453,14 @@ fn run_symbol(
         } else {
             payload["slice"] = json!(slice);
         }
-        if show_saved {
+        if ctx.show_saved {
             payload["saved"] = json!({
                 "tokens_before": file_tokens,
                 "tokens_after": delivered_tokens,
                 "percent": saved,
             });
         }
-        println!("{payload}");
+        deliver(&format!("{payload}\n"), ctx.output)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -386,27 +474,22 @@ fn run_symbol(
             symbol.end_line
         )
     };
-    if show_saved {
-        println!(
+    let header = if ctx.show_saved {
+        format!(
             "# {}  {}  ({} tokens, saved ~{}%)",
             symbol.name,
             loc,
             group(delivered_tokens),
             saved,
-        );
+        )
     } else {
-        println!("# {}  {}", symbol.name, loc);
-    }
-    println!("{slice}");
+        format!("# {}  {}", symbol.name, loc)
+    };
+    deliver(&format!("{header}\n{slice}\n"), ctx.output)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_read(
-    path: &Path,
-    raw: &str,
-    format: Format,
-    show_saved: bool,
-) -> Result<ExitCode, ExitError> {
+fn run_read(path: &Path, raw: &str, ctx: &OutputCtx) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
     // Split on `\n` keeping the endings so CRLF slices stay verbatim
     // (byte-stability plus original line-ending fidelity).
@@ -432,7 +515,7 @@ fn run_read(
     let file_tokens = tokens(&source);
     let saved = saved_pct(file_tokens, delivered_tokens);
 
-    if format == Format::Json {
+    if ctx.format == Format::Json {
         let ranges_json: Vec<serde_json::Value> = slices
             .iter()
             .map(
@@ -445,29 +528,32 @@ fn run_read(
             "path": path.display().to_string(),
             "ranges": ranges_json,
         });
-        if show_saved {
+        if ctx.show_saved {
             payload["saved"] = json!({
                 "tokens_before": file_tokens,
                 "tokens_after": delivered_tokens,
                 "percent": saved,
             });
         }
-        println!("{payload}");
+        deliver(&format!("{payload}\n"), ctx.output)?;
         return Ok(ExitCode::SUCCESS);
     }
 
+    let mut out = String::new();
     for (start, end, text) in &slices {
-        println!("# {}:{}-{}", path.display(), start, end);
-        println!("{text}");
+        out.push_str(&format!("# {}:{}-{}\n", path.display(), start, end));
+        out.push_str(text);
+        out.push('\n');
     }
-    if show_saved {
-        println!(
-            "Saved ~{}% ({} -> {} tokens)",
+    if ctx.show_saved {
+        out.push_str(&format!(
+            "Saved ~{}% ({} -> {} tokens)\n",
             saved,
             group(file_tokens),
             group(delivered_tokens),
-        );
+        ));
     }
+    deliver(&out, ctx.output)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -476,8 +562,7 @@ fn run_exec(
     keep: &[String],
     head: Option<usize>,
     tail: Option<usize>,
-    format: Format,
-    show_saved: bool,
+    ctx: &OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
     let words = shell_words::split(cmd)
@@ -550,7 +635,7 @@ fn run_exec(
             .map_err(|e| ExitError::new(1, format!("failed to wait for `{cmd}`: {e}")))?,
     );
 
-    if format == Format::Json {
+    if ctx.format == Format::Json {
         let mut payload = json!({
             "schema_version": 1,
             "tool": "exec",
@@ -558,40 +643,37 @@ fn run_exec(
             "exit_code": code,
             "compressed": result.text,
         });
-        if show_saved {
+        if ctx.show_saved {
             payload["saved"] = json!({
                 "tokens_before": stats.original_tokens,
                 "tokens_after": stats.compressed_tokens,
                 "percent": stats.saved_percent,
             });
         }
-        println!("{payload}");
+        deliver(&format!("{payload}\n"), ctx.output)?;
         return Ok(ExitCode::from(code as u8));
     }
 
-    println!("$ {cmd}");
+    let mut out = format!("$ {cmd}\n");
     if !result.text.is_empty() {
-        println!("{}", result.text);
+        out.push_str(&result.text);
+        out.push('\n');
     }
-    if show_saved {
-        println!(
-            "Saved ~{}% ({} -> {} tokens)",
+    if ctx.show_saved {
+        out.push_str(&format!(
+            "Saved ~{}% ({} -> {} tokens)\n",
             stats.saved_percent,
             group(stats.original_tokens),
             group(stats.compressed_tokens),
-        );
+        ));
     }
+    deliver(&out, ctx.output)?;
     Ok(ExitCode::from(code as u8))
 }
 
-fn run_deps(
-    path: &Path,
-    format: Format,
-    show_saved: bool,
-    config: &Config,
-) -> Result<ExitCode, ExitError> {
+fn run_deps(path: &Path, ctx: &OutputCtx, config: &Config) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
-    let (parsed, file_tokens) = parse_and_tokens(path, &source, show_saved)?;
+    let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let imports = ctx_symbol::extract_imports(&parsed);
     let file_dir = path.parent().unwrap_or(Path::new("."));
@@ -604,7 +686,7 @@ fn run_deps(
     let delivered_tokens: usize = resolved.iter().map(|r| tokens(&r.target)).sum();
     let saved = saved_pct(file_tokens, delivered_tokens);
 
-    if format == Format::Json {
+    if ctx.format == Format::Json {
         let entries: Vec<serde_json::Value> = resolved
             .iter()
             .map(|r| json!({ "target": r.target, "kind": r.kind, "line": r.line }))
@@ -616,18 +698,18 @@ fn run_deps(
             "language": parsed.language.name(),
             "imports": entries,
         });
-        if show_saved {
+        if ctx.show_saved {
             payload["saved"] = json!({
                 "tokens_before": file_tokens,
                 "tokens_after": delivered_tokens,
                 "percent": saved,
             });
         }
-        println!("{payload}");
+        deliver(&format!("{payload}\n"), ctx.output)?;
         return Ok(ExitCode::SUCCESS);
     }
 
-    let header = if show_saved {
+    let header = if ctx.show_saved {
         format!(
             "# {}  [{} imports, {} -> {} tokens, saved ~{}%]",
             path.display(),
@@ -639,7 +721,7 @@ fn run_deps(
     } else {
         format!("# {}  [{} imports]", path.display(), resolved.len())
     };
-    println!("{header}");
+    let mut out = format!("{header}\n");
     if !resolved.is_empty() {
         let name_w = resolved
             .iter()
@@ -648,14 +730,15 @@ fn run_deps(
             .unwrap_or(0)
             .max(10);
         for r in &resolved {
-            println!(
-                "  {:<9} {:<name_w$}    L:{}",
+            out.push_str(&format!(
+                "  {:<9} {:<name_w$}    L:{}\n",
                 dep_kind_name(r.kind),
                 r.target,
                 r.line,
-            );
+            ));
         }
     }
+    deliver(&out, ctx.output)?;
     Ok(ExitCode::SUCCESS)
 }
 

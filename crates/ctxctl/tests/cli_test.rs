@@ -662,6 +662,82 @@ fn symbol_slices_the_original_source() {
 }
 
 #[test]
+fn symbol_kind_filter_disambiguates_same_name_symbols() {
+    // Issue #6: a method and a same-named local variable. Source order picks
+    // the variable; --kind method must pick the method instead.
+    let dir = tmp_dir("symbol-kind");
+    let path = dir.join("agent.ts");
+    let src = r#"
+const step = 1;
+
+export class ReactLoopAgent {
+  async step(): Promise<void> {
+    void step;
+  }
+}
+"#;
+    std::fs::write(&path, src).expect("write fixture");
+    let p = path.to_str().unwrap();
+
+    let default_pick = run(&["symbol", "--json", p, "--name", "step"]);
+    assert_eq!(default_pick.status.code(), Some(0));
+    let value: Value = serde_json::from_str(&stdout(&default_pick)).expect("json");
+    assert_eq!(value["symbol"]["kind"], "var");
+
+    let method_pick = run(&["symbol", "--json", p, "--name", "step", "--kind", "method"]);
+    assert_eq!(method_pick.status.code(), Some(0));
+    let value: Value = serde_json::from_str(&stdout(&method_pick)).expect("json");
+    assert_eq!(value["symbol"]["kind"], "method");
+    assert!(value["slice"].as_str().unwrap().contains("async step"));
+
+    let miss = run(&["symbol", p, "--name", "step", "--kind", "struct"]);
+    assert_eq!(miss.status.code(), Some(4), "kind miss must exit 4");
+}
+
+#[test]
+fn output_file_receives_the_full_payload() {
+    // Issue #5: large payloads must be writable to a file, bypassing stdout
+    // limits. The file receives exactly the stdout bytes; stdout stays empty.
+    let dir = tmp_dir("output-file");
+    let out_file = dir.join("out.json");
+    let output = run(&[
+        "outline",
+        "--json",
+        "--output",
+        out_file.to_str().unwrap(),
+        FIXTURE,
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).is_empty(), "stdout must stay clean");
+    assert!(
+        stderr(&output).contains("wrote"),
+        "confirmation: {}",
+        stderr(&output)
+    );
+
+    let file_bytes = std::fs::read(&out_file).expect("read output file");
+    let value: Value = serde_json::from_slice(&file_bytes).expect("file is valid json");
+    assert_eq!(value["tool"], "outline");
+    assert_eq!(value["symbols"].as_array().map(Vec::len), Some(4));
+
+    // The file must be byte-identical to a plain stdout run.
+    let plain = run(&["outline", "--json", FIXTURE]);
+    assert_eq!(std::fs::read(&out_file).unwrap(), plain.stdout);
+}
+
+#[test]
+fn output_file_in_unwritable_dir_exits_1() {
+    let output = run(&[
+        "outline",
+        "--output",
+        "/nonexistent-dir-ctxctl/out.txt",
+        FIXTURE,
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("failed to write"));
+}
+
+#[test]
 fn symbol_json_contract() {
     let output = run(&["symbol", "--json", FIXTURE, "--name", "norm"]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
