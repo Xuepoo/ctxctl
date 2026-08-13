@@ -24,6 +24,7 @@ impl Language for CLang {
             "compound_statement",
             "field_declaration_list",
             "initializer_list",
+            "enumerator_list",
         ]
     }
 

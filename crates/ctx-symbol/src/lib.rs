@@ -365,6 +365,9 @@ fn fold_at_body_node(
             .map(|i| body_start + i)
             .unwrap_or(sym_end);
         let header = &source[sym_start..opener_nl];
+        if header.matches("/*").count() > header.matches("*/").count() {
+            return None; // open block comment swallows the fold marker
+        }
         let last_byte = body_end.saturating_sub(1);
         let closer_line_start = source[..last_byte]
             .rfind('\n')
