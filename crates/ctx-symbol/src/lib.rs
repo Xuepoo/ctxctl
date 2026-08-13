@@ -412,6 +412,12 @@ fn fold_at_body_node(
         if !is_closer(tail_first) {
             return None; // inline `}` in minified source
         }
+        // The closer line must not close more braces than the header opens —
+        // consecutive `}}`/`}}}` (nested namespaces collapsing onto one line)
+        // would otherwise leave the fold unbalanced.
+        if tail.matches('}').count() > header.matches('{').count() {
+            return None;
+        }
         let keep_tail = parsed.language.keeps_brace_closers();
         let omitted = middle.lines().count() + usize::from(!keep_tail);
         if omitted == 0 {
