@@ -101,12 +101,11 @@ impl Language for LuaLang {
 /// Text of a string literal node without its quotes. Lua `string` nodes
 /// expose a `content` child; fall back to quote-stripping.
 fn string_value(node: tree_sitter::Node, source: &str) -> Option<String> {
-    if node.kind() == "string" {
-        if let Some(content) = node.child_by_field_name("content") {
-            if let Ok(text) = content.utf8_text(source.as_bytes()) {
-                return Some(text.trim().to_string());
-            }
-        }
+    if node.kind() == "string"
+        && let Some(content) = node.child_by_field_name("content")
+        && let Ok(text) = content.utf8_text(source.as_bytes())
+    {
+        return Some(text.trim().to_string());
     }
     let text = node.utf8_text(source.as_bytes()).ok()?.trim();
     let unquoted = text.strip_prefix(['\'', '"'])?;

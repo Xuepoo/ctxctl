@@ -84,19 +84,17 @@ impl Language for JavaLang {
                 is_static = true;
                 continue;
             }
-            if matches!(kid.kind(), "scoped_identifier" | "identifier") {
-                if let Ok(text) = kid.utf8_text(source.as_bytes()) {
-                    let mut target = text.trim().to_string();
-                    if is_static {
-                        if let Some(idx) = target.rfind('.') {
-                            target.truncate(idx);
-                        }
-                    }
-                    return vec![crate::imports::ImportTarget {
-                        target,
-                        relative: false,
-                    }];
+            if matches!(kid.kind(), "scoped_identifier" | "identifier")
+                && let Ok(text) = kid.utf8_text(source.as_bytes())
+            {
+                let mut target = text.trim().to_string();
+                if is_static && let Some(idx) = target.rfind('.') {
+                    target.truncate(idx);
                 }
+                return vec![crate::imports::ImportTarget {
+                    target,
+                    relative: false,
+                }];
             }
         }
         Vec::new()
