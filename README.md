@@ -87,10 +87,23 @@ Global flags: `--json` (machine contract), `--config <path>`, `--no-saved`. Conf
 Load the ctxctl skill to teach your coding agent to read files by symbol slice and compress command output instead of dumping raw context:
 
 ```bash
-npx skills add https://github.com/Xuepoo/ctxctl-skills --skill ctxctl-core -y
+# List available skills
+npx skills add Xuepoo/ctxctl-skills --list
+
+# Install the core skill for all detected agents
+npx skills add Xuepoo/ctxctl-skills --all
+
+# Or install for a specific agent
+npx skills add Xuepoo/ctxctl-skills --skill ctxctl-core --agent claude-code
 ```
 
-The skill gives agents first-class awareness of the `outline` / `symbol` / `read` / `deps` / `exec` workflow — fewer tokens per task, cache-friendly runs.
+Use the skill once without installing it:
+
+```bash
+npx skills use Xuepoo/ctxctl-skills --skill ctxctl-core
+```
+
+The skill gives agents first-class awareness of the `outline` / `symbol` / `read` / `deps` / `exec` workflow — fewer tokens per task, cache-friendly runs. The CLI supports GitHub shorthand, full URLs, and local paths; see <https://github.com/vercel-labs/skills>.
 
 ## Documentation
 

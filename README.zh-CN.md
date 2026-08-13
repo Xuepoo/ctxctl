@@ -87,10 +87,23 @@ ctxctl outline src/main.rs --json                  # 机器可读契约
 为你的编程代理加载 ctxctl skill，让它学会按符号切片读文件、压缩命令输出，而不是倾倒原始上下文：
 
 ```bash
-npx skills add https://github.com/Xuepoo/ctxctl-skills --skill ctxctl-core -y
+# 列出可用 skills
+npx skills add Xuepoo/ctxctl-skills --list
+
+# 为所有已检测到的代理安装核心 skill
+npx skills add Xuepoo/ctxctl-skills --all
+
+# 或只为某个代理安装
+npx skills add Xuepoo/ctxctl-skills --skill ctxctl-core --agent claude-code
 ```
 
-skill 赋予代理对 `outline` / `symbol` / `read` / `deps` / `exec` 工作流的一等感知——每个任务更少 token，运行更友好地命中缓存。
+临时使用（不安装）：
+
+```bash
+npx skills use Xuepoo/ctxctl-skills --skill ctxctl-core
+```
+
+skill 赋予代理对 `outline` / `symbol` / `read` / `deps` / `exec` 工作流的一等感知——每个任务更少 token，运行更友好地命中缓存。CLI 支持 GitHub 简写、完整 URL 与本地路径，详见 <https://github.com/vercel-labs/skills>。
 
 ## 文档
 
