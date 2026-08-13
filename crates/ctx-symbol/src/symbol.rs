@@ -13,6 +13,7 @@ pub enum SymbolKind {
     Interface,
     Function,
     Method,
+    Module,
     Const,
     Variable,
     Trait,

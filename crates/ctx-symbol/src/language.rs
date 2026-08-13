@@ -167,6 +167,93 @@ pub fn is_definition(lang: &dyn Language, kind: &str) -> Option<SymbolKind> {
         .map(|(_, k)| *k)
 }
 
+/// Normalize a raw signature for display. Deterministic, applied uniformly
+/// across all backends so outline rows stay compact:
+///
+/// - skip leading attribute / decorator-only lines (`#[...]`, `@decorator`)
+/// - drop a trailing comment (started by `//` or `/*` after code)
+/// - collapse internal whitespace runs
+/// - strip trailing continuation delimiters (`(`, `{`, `,`, `;`, `:`, `=`,
+///   `->`, `=>`) left by declarations that span multiple lines
+/// - cap at [`MAX_SIGNATURE`] chars with an ellipsis
+pub(crate) fn clean_signature(raw: &str) -> String {
+    const MAX_SIGNATURE: usize = 120;
+
+    let line = raw
+        .lines()
+        .map(str::trim)
+        .find(|t| !(t.starts_with("#[") || is_annotation_only(t)))
+        .unwrap_or("");
+    let line = strip_trailing_comment(line);
+
+    let mut sig = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    loop {
+        let mut changed = false;
+        for suffix in ["=>", "->"] {
+            if let Some(t) = sig.strip_suffix(suffix) {
+                sig = t.trim_end().to_string();
+                changed = true;
+            }
+        }
+        if sig.ends_with(['(', '{', ',', ';', ':', '=']) {
+            sig = sig
+                .trim_end_matches(['(', '{', ',', ';', ':', '='])
+                .trim_end()
+                .to_string();
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    if sig.len() > MAX_SIGNATURE {
+        let mut cut = MAX_SIGNATURE - 1;
+        while cut > 0 && !sig.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        sig.truncate(cut);
+        sig.push('…');
+    }
+    if sig.is_empty() {
+        "…".to_string()
+    } else {
+        sig
+    }
+}
+
+/// A lone `@decorator` / `@decorator(args)` line with nothing else on it.
+fn is_annotation_only(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix('@') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return true;
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    if let Some(after) = rest.find('(') {
+        rest[..after].chars().all(ident) && rest.ends_with(')')
+    } else {
+        !rest.contains(char::is_whitespace) && rest.chars().all(ident)
+    }
+}
+
+/// Cut a `//` or `/*` comment when it starts after code (preceded by
+/// whitespace), leaving URL strings untouched.
+fn strip_trailing_comment(line: &str) -> &str {
+    let cut_at = |marker: &str| {
+        line.match_indices(marker).find_map(|(i, _)| {
+            let preceded_by_ws = line[..i].ends_with(char::is_whitespace);
+            (i == 0 || preceded_by_ws).then_some(i)
+        })
+    };
+    let cut = cut_at("//").into_iter().chain(cut_at("/*")).min();
+    match cut {
+        Some(i) => line[..i].trim_end(),
+        None => line,
+    }
+}
+
 /// Walk a tree and collect all definition symbols in source order.
 pub fn extract_symbols(parsed: &ParsedSource) -> Vec<Symbol> {
     let mut out = Vec::new();
@@ -180,7 +267,7 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
         && let Some(name) = parsed.language.symbol_name(&node, &parsed.source)
     {
         let range = parsed.language.definition_byte_range(&node);
-        let sig = parsed.language.signature(&node, &parsed.source);
+        let sig = clean_signature(&parsed.language.signature(&node, &parsed.source));
         let (start, end) = (node.start_position(), node.end_position());
         let doc = parsed.language.doc_comment(parsed, &node);
         out.push(Symbol {
@@ -256,4 +343,54 @@ fn strip_comment_markers(text: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_signature;
+
+    #[test]
+    fn strips_trailing_continuation_delimiters() {
+        assert_eq!(clean_signature("pub fn run_exec("), "pub fn run_exec");
+        assert_eq!(clean_signature("struct Cli {"), "struct Cli");
+        assert_eq!(
+            clean_signature("fn main() -> ExitCode {"),
+            "fn main() -> ExitCode"
+        );
+        assert_eq!(clean_signature("mod config;"), "mod config");
+        assert_eq!(clean_signature("def validate(cfg):"), "def validate(cfg)");
+        assert_eq!(clean_signature("const f = (x) =>"), "const f = (x)");
+        assert_eq!(
+            clean_signature("pub fn add(a: i32, b: i32) -> i32 {"),
+            "pub fn add(a: i32, b: i32) -> i32"
+        );
+    }
+
+    #[test]
+    fn skips_attribute_and_decorator_lines() {
+        assert_eq!(
+            clean_signature("#[derive(Debug)]\npub struct Config {"),
+            "pub struct Config"
+        );
+        assert_eq!(clean_signature("@dataclass\nclass Point:"), "class Point");
+    }
+
+    #[test]
+    fn drops_trailing_comments_and_collapses_whitespace() {
+        assert_eq!(
+            clean_signature("pub  fn   foo() { // does things"),
+            "pub fn foo()"
+        );
+        assert_eq!(
+            clean_signature("const URL = \"https://example.com\";"),
+            "const URL = \"https://example.com\""
+        );
+    }
+
+    #[test]
+    fn caps_long_signatures() {
+        let sig = clean_signature(&format!("fn very_long_name{}(", "x".repeat(300)));
+        assert!(sig.ends_with('…'));
+        assert!(sig.chars().count() <= 120);
+    }
 }

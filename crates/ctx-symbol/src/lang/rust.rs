@@ -25,7 +25,7 @@ impl Language for RustLang {
             ("struct_item", SymbolKind::Struct),
             ("enum_item", SymbolKind::Enum),
             ("trait_item", SymbolKind::Trait),
-            ("mod_item", SymbolKind::Type),
+            ("mod_item", SymbolKind::Module),
             ("type_item", SymbolKind::Type),
             ("const_item", SymbolKind::Const),
             ("static_item", SymbolKind::Variable),
