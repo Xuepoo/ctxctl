@@ -119,7 +119,6 @@ jobs:
             *.pkg.tar.zst
           if-no-files-found: warn
 
-
   publish-cratesio:
     name: Publish crates.io
     needs: verify
@@ -135,7 +134,7 @@ jobs:
           for crate in ctx-symbol ctx-exec ctxctl; do
             if cargo publish -p "$crate" --locked 2>&1 | tee /tmp/publish.log; then
               echo "published $crate"
-            elif grep -q "already uploaded" /tmp/publish.log; then
+            elif grep -qE "already uploaded|already exists on crates.io" /tmp/publish.log; then
               echo "$crate version already exists, skipping"
             else
               echo "::error::failed to publish $crate"
@@ -367,5 +366,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
