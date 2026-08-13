@@ -1019,3 +1019,43 @@ fn unsupported_language_errors() {
     let res = ctx_symbol::outline("plain text", path);
     assert!(res.is_err());
 }
+
+#[test]
+fn ast_anchored_fold_c_functions_and_typedefs() {
+    let src = "int add(int a, int b) {\n    int r = a + b;\n    return r;\n}\n\ntypedef struct Point {\n    int x;\n    int y;\n} Point;\n";
+    let parsed = ctx_symbol::parse(c_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+
+    let add = symbols.iter().find(|s| s.name == "add").unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, add);
+    assert!(
+        compact.contains("int add(int a, int b) {"),
+        "header kept: {compact}"
+    );
+    assert!(
+        compact.contains("... [2 lines omitted]"),
+        "body folded: {compact}"
+    );
+    assert!(compact.contains('}'), "closer kept: {compact}");
+    let reparsed = ctx_symbol::parse(c_path(), &compact).unwrap();
+    assert!(
+        !reparsed.tree.root_node().has_error(),
+        "re-parse: {compact}"
+    );
+
+    let point = symbols.iter().find(|s| s.name == "Point").unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, point);
+    assert!(
+        compact.contains("typedef struct Point {"),
+        "typedef header kept: {compact}"
+    );
+    assert!(
+        compact.contains("} Point;"),
+        "typedef closer kept: {compact}"
+    );
+    let reparsed = ctx_symbol::parse(c_path(), &compact).unwrap();
+    assert!(
+        !reparsed.tree.root_node().has_error(),
+        "re-parse: {compact}"
+    );
+}

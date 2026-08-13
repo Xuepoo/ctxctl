@@ -103,6 +103,14 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
             out
         })
         .unwrap_or_default();
+    // AST-anchored fold: when a body node exists, fold at its boundary. The
+    // line heuristic below is the fallback for body-less definitions (macros,
+    // forward declarations).
+    if let Some(body) = sym_node.and_then(|n| find_body_node(parsed.language, n))
+        && let Some(ast) = fold_at_body_node(&parsed.source, symbol, &body, parsed)
+    {
+        return ast;
+    }
     // Symbol-relative index of the first body line (python). The absolute
     // body line is anchored in the AST; subtract the range's first source
     // line (which may include decorators).
@@ -262,6 +270,137 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The foldable body node of a definition: the `body` field of the
+/// (unwrapped) definition node, else the first descendant (source order)
+/// whose kind is in [`Language::body_node_kinds`]. `None` when the backend
+/// has no body nodes.
+fn find_body_node<'a>(
+    lang: &'a dyn Language,
+    sym_node: tree_sitter::Node<'a>,
+) -> Option<tree_sitter::Node<'a>> {
+    if lang.body_node_kinds().is_empty() {
+        return None;
+    }
+    // Unwrap definition wrappers (`decorated_definition` -> its `definition`
+    // field) so `field("body")` reads through.
+    let def = if sym_node.kind().contains("decorated") {
+        sym_node
+            .child_by_field_name("definition")
+            .unwrap_or(sym_node)
+    } else {
+        sym_node
+    };
+    if let Some(body) = def.child_by_field_name("body") {
+        return Some(body);
+    }
+    let kinds = lang.body_node_kinds();
+    // Iterative pre-order DFS (source order): a node is tested before its
+    // descendants are pushed, so a direct child body wins over any deeper
+    // body. This lets a typedef find the field list inside its struct
+    // specifier while a class finds its own declaration list first.
+    let mut stack: Vec<tree_sitter::Node> = Vec::new();
+    let mut cursor = sym_node.walk();
+    for child in sym_node
+        .children(&mut cursor)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        stack.push(child);
+    }
+    while let Some(node) = stack.pop() {
+        if kinds.contains(&node.kind()) {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node
+            .children(&mut cursor)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// AST-anchored fold: the header is everything up to (and including) the
+/// body's opening line; the body is replaced by a fold marker; the body's
+/// closing line is kept when it is a block closer (and the backend keeps
+/// brace/end closers), including any trailing declarators on the same line
+/// (`} Point;`, `};`). Returns `None` when there is nothing to fold.
+fn fold_at_body_node(
+    source: &str,
+    symbol: &Symbol,
+    body: &tree_sitter::Node,
+    parsed: &ParsedSource,
+) -> Option<String> {
+    let sym_start = symbol.byte_range.start;
+    let sym_end = symbol.byte_range.end;
+    let body_start = body.start_byte();
+    let body_end = body.end_byte();
+    if body_start <= sym_start || body_end > sym_end || body_start >= body_end {
+        return None;
+    }
+    // Start of the line containing the body's last byte (the closer line).
+    let last_byte = body_end.saturating_sub(1);
+    let closer_line_start = source[..last_byte]
+        .rfind('\n')
+        .map(|i| i + 1)
+        .unwrap_or(sym_start);
+    // Brace bodies (`{` … `}`) keep their opening `{` line in the header;
+    // indentation / keyword bodies (python, ruby, lua) have no opener inside
+    // the body node, so the fold starts at the body's first line.
+    let body_first_line = source[body_start..body_end].lines().next().unwrap_or("");
+    let brace_body = body_first_line.trim_start().starts_with('{');
+    let (header, middle) = if brace_body {
+        let opener_nl = source[body_start..sym_end]
+            .find('\n')
+            .map(|i| body_start + i)
+            .unwrap_or(sym_end);
+        if closer_line_start <= opener_nl {
+            return None; // single-line body: nothing to fold
+        }
+        (
+            &source[sym_start..opener_nl],
+            &source[opener_nl + 1..closer_line_start],
+        )
+    } else {
+        if closer_line_start <= body_start {
+            return None;
+        }
+        (
+            source[sym_start..body_start].trim_end_matches([' ', '\t', '\r', '\n']),
+            &source[body_start..closer_line_start],
+        )
+    };
+    let tail = source[closer_line_start..sym_end].trim_end_matches('\n');
+    let tail_first = tail.lines().next().unwrap_or("");
+    let keep_tail = is_closer(tail_first)
+        && (parsed.language.keeps_brace_closers() || is_end_closer(tail_first.trim()));
+    let omitted = middle.lines().count() + usize::from(!keep_tail);
+    if omitted == 0 {
+        return None;
+    }
+    let indent = leading_whitespace(middle.lines().next().unwrap_or(""));
+    let mut out = String::from(header);
+    out.push('\n');
+    out.push_str(indent);
+    out.push_str(parsed.language.comment_prefix());
+    out.push_str(" ... [");
+    out.push_str(&omitted.to_string());
+    out.push_str(" lines omitted]");
+    if keep_tail {
+        out.push('\n');
+        out.push_str(tail);
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
 }
 
 /// Odd-count of unescaped `"` or backtick delimiters in one line, ignoring
