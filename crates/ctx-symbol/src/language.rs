@@ -94,12 +94,13 @@ pub trait Language: Send + Sync {
 
     /// True if a line opens a block, so the compact view folds after it.
     ///
-    /// Default: lines ending with `{` or `:` (python) plus lines starting
-    /// with `{` (braces on their own line, e.g. C/C++ one-line bodies).
-    /// Ruby overrides with its keyword openers (`def`, `class`, `if`, …).
+    /// Default: lines ending with `{` plus lines starting with `{` (braces on
+    /// their own line, e.g. C/C++ one-line bodies). `:` is NOT an opener here
+    /// — it signals indentation blocks (python), which override this. Ruby
+    /// overrides with its keyword openers (`def`, `class`, `if`, …).
     fn is_opener_line(&self, line: &str) -> bool {
         let t = line.trim();
-        t.ends_with(['{', ':']) || t.starts_with('{')
+        t.ends_with('{') || t.starts_with('{')
     }
 
     /// Doc comment immediately above the definition node, if any.

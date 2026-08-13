@@ -26,6 +26,11 @@ impl Language for PythonLang {
         &["block"]
     }
 
+    fn is_opener_line(&self, line: &str) -> bool {
+        let t = line.trim();
+        t.ends_with(['{', ':']) || t.starts_with('{')
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         // `decorated_definition` is a wrapper; its inner function/class
         // definition is extracted with a range that excludes the decorators.
