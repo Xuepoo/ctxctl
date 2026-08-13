@@ -3,6 +3,8 @@ name = "ctx-symbol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Reusable symbol engine: tree-sitter AST symbol location + original source slicing for token-efficient code reading."
 
 [dependencies]

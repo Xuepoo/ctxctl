@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [0.1.2] - 2026-08-13
+
+### Fixed
+
+- **crates.io publish** — 0.1.1's `ctx-symbol` shipped without the
+  `parse_error_count` export (a commit was missed from the tag), making
+  `ctxctl` unpublishable against it; crates.io versions are immutable, so
+  this release republishes the three crates with the complete API and
+  adds `repository`/`homepage` manifest metadata.
+
 ## [0.1.1] - 2026-08-13
 
 ### Changed

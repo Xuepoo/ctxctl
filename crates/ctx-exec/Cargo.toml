@@ -3,6 +3,8 @@ name = "ctx-exec"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Token-efficient command output compression via rg-rule-driven filtering. Byte-stable output."
 
 [dependencies]
