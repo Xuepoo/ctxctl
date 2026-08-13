@@ -19,6 +19,10 @@ impl Language for JavaLang {
         path.extension().map(|e| e == "java").unwrap_or(false)
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["block", "class_body", "interface_body", "enum_body"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("class_declaration", SymbolKind::Class),

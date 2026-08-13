@@ -19,6 +19,10 @@ impl Language for CLang {
         matches!(path.extension().and_then(|e| e.to_str()), Some("c" | "h"))
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["compound_statement", "field_declaration_list"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("function_definition", SymbolKind::Function),

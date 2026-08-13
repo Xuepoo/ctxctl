@@ -19,6 +19,10 @@ impl Language for GoLang {
         path.extension().map(|e| e == "go").unwrap_or(false)
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["block", "field_declaration_list"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         // `type_declaration` / `var_declaration` wrap the spec nodes below,
         // which carry the `name` field; the specs are extracted individually.

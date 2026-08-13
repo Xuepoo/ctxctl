@@ -22,6 +22,10 @@ impl Language for JavaScriptLang {
         )
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["statement_block", "class_body"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("function_declaration", SymbolKind::Function),

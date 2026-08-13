@@ -74,6 +74,14 @@ pub trait Language: Send + Sync {
         true
     }
 
+    /// Kinds of a definition's foldable body node (e.g. `block`,
+    /// `compound_statement`, `field_declaration_list`). Used by the generic
+    /// AST-anchored fold locator; empty means "no body nodes" and the fold
+    /// falls back to the line heuristic.
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &[]
+    }
+
     /// 1-based source line where the definition's body begins (the first
     /// line after the signature), when the backend can anchor it in the AST.
     /// Backends with indentation-based blocks (python) must provide this —

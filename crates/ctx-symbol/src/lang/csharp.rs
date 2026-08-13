@@ -19,6 +19,10 @@ impl Language for CSharpLang {
         path.extension().map(|e| e == "cs").unwrap_or(false)
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["block", "declaration_list", "accessor_list"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("class_declaration", SymbolKind::Class),

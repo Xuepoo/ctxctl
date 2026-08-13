@@ -19,6 +19,10 @@ impl Language for LuaLang {
         path.extension().map(|e| e == "lua").unwrap_or(false)
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["block"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("function_declaration", SymbolKind::Function),

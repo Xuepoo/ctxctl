@@ -19,6 +19,10 @@ impl Language for RubyLang {
         path.extension().map(|e| e == "rb").unwrap_or(false)
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["body_statement"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("method", SymbolKind::Function),

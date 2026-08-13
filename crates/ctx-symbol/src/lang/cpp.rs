@@ -23,6 +23,10 @@ impl Language for CppLang {
         )
     }
 
+    fn body_node_kinds(&self) -> &[&'static str] {
+        &["compound_statement", "field_declaration_list"]
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("function_definition", SymbolKind::Function),
