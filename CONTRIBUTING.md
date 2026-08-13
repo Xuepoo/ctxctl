@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.96+
+- Rust 1.97+ (CI, Docker, and Nix pin 1.97.1; `rust-toolchain.toml` tracks stable)
 - `just` — command runner
 - `lefthook` — Git hooks
 - `cargo-nextest` — test runner (optional, `cargo test` works too)
@@ -30,7 +30,7 @@ cargo nextest run       # faster parallel tests (if installed)
 Use Conventional Commits:
 
 ```text
-feat(task): add atomic task claiming
-fix(config): resolve project override precedence
-docs(cli): document resume JSON schema
+feat(ctx-symbol): add a new language backend
+fix(ctx-exec): keep-pattern matching for empty lists
+docs(cli-contract): document exec signal exit codes
 ```
