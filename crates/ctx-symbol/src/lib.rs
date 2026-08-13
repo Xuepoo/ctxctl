@@ -163,7 +163,18 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         // forward declaration or other body-less definition: pass through.
         fold_at = match last_opener {
             Some(i) => i + 1,
-            None if lines[0].trim_start().starts_with('#') => 1,
+            // A macro folds after its first line only when the name lives on
+            // that line (`#define FOO(x) \`); `#define \` defers the name to
+            // the next line and must stay intact.
+            None if lines[0].trim_start().starts_with('#') => {
+                let rest = lines[0].trim_start();
+                let rest = rest.trim_start_matches('#').trim_start();
+                let rest = rest.strip_prefix("define").unwrap_or(rest);
+                if rest.trim_matches([' ', '\t', '\\']).is_empty() {
+                    return text.to_string();
+                }
+                1
+            }
             None => return text.to_string(),
         };
     }
@@ -173,10 +184,10 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     // lines together. Slide the fold point past any such boundary. Comment
     // lines never continue; neither do lines inside a multi-line string.
     let mut in_string = vec![false; lines.len()];
-    let mut state = false;
+    let mut state = StrDelim::None;
     for (i, line) in lines.iter().enumerate() {
-        state ^= quote_parity(line, line_starts[i] + sym_start, &comments);
-        in_string[i] = state;
+        state = advance_str_state(state, line, line_starts[i] + sym_start, &comments);
+        in_string[i] = state != StrDelim::None;
     }
     // Cumulative `(`/`[` balance after each line (parens inside strings are
     // skipped): a boundary with pending open parens would orphan them.
@@ -459,25 +470,52 @@ fn fold_at_body_node(
     Some(out)
 }
 
-/// Odd-count of unescaped `"` or backtick delimiters in one line, ignoring
-/// comment content and single-quoted spans (`'"'` char literals must not
-/// toggle the state). Toggled across lines it tracks multi-line strings
-/// (js templates, python docstrings, go raw strings).
-fn quote_parity(line: &str, abs_start: usize, comments: &[Range<usize>]) -> bool {
-    let mut odd = false;
+/// Which multi-line string delimiter is currently open, if any.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StrDelim {
+    None,
+    Quote,
+    Backtick,
+}
+
+/// Advance the string-delimiter state across one line. `"` toggles the quote
+/// state, `` ` `` the backtick state — each delimiter is inert inside the
+/// other's string (a go raw string may contain `"`, a js template may contain
+/// quotes), so the active delimiter is tracked explicitly rather than as a
+/// single odd/even toggle. Escapes (`\`) are skipped except inside raw
+/// strings, where they are literal. Comment content and char literals are
+/// masked out via `code_chars`.
+fn advance_str_state(
+    start: StrDelim,
+    line: &str,
+    abs_start: usize,
+    comments: &[Range<usize>],
+) -> StrDelim {
+    let mut state = start;
     let mut escaped = false;
     for ch in code_chars(line, abs_start, comments) {
         if escaped {
             escaped = false;
             continue;
         }
-        if ch == '\\' {
+        if ch == '\\' && state != StrDelim::Backtick {
             escaped = true;
-        } else if matches!(ch, '"' | '`') {
-            odd = !odd;
+            continue;
+        }
+        match state {
+            StrDelim::None => {
+                if ch == '"' {
+                    state = StrDelim::Quote;
+                } else if ch == '`' {
+                    state = StrDelim::Backtick;
+                }
+            }
+            StrDelim::Quote if ch == '"' => state = StrDelim::None,
+            StrDelim::Backtick if ch == '`' => state = StrDelim::None,
+            _ => {}
         }
     }
-    odd
+    state
 }
 
 /// Collect the byte ranges of all comment nodes inside a subtree, sorted by
