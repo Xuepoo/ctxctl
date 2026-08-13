@@ -141,18 +141,239 @@ pub trait Language: Send + Sync {
 pub fn parse(path: &Path, source: &str) -> Result<ParsedSource, SymbolError> {
     let lang = detect_language(path)
         .ok_or_else(|| SymbolError::UnsupportedLanguage(path.display().to_string()))?;
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&lang.grammar_for_path(path))
-        .map_err(|e| SymbolError::Parse(e.to_string()))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| SymbolError::Parse("tree-sitter returned no tree".into()))?;
+    let (lang, tree) = parse_ambiguous(path, source, lang)?;
     Ok(ParsedSource {
         tree,
         source: source.to_string(),
         language: lang,
     })
+}
+
+/// Parse with one grammar.
+fn parse_tree(
+    grammar: tree_sitter::Language,
+    source: &str,
+) -> Result<tree_sitter::Tree, SymbolError> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&grammar)
+        .map_err(|e| SymbolError::Parse(e.to_string()))?;
+    parser
+        .parse(source, None)
+        .ok_or_else(|| SymbolError::Parse("tree-sitter returned no tree".into()))
+}
+
+/// Count ERROR/MISSING nodes in a tree.
+pub(crate) fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
+    fn walk(node: tree_sitter::Node, count: &mut usize) {
+        if node.is_error() || node.is_missing() {
+            *count += 1;
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, count);
+        }
+    }
+    let mut count = 0;
+    walk(tree.root_node(), &mut count);
+    count
+}
+
+/// Error profile of a tree: total bytes covered by ERROR nodes plus the
+/// ERROR/MISSING node count. A single runaway error node can swallow a whole
+/// file; the byte span weighs that much more heavily than one-off token
+/// errors (e.g. an annotation macro).
+fn error_metrics(tree: &tree_sitter::Tree) -> (usize, usize) {
+    fn walk(node: tree_sitter::Node, bytes: &mut usize, count: &mut usize) {
+        if node.is_error() {
+            *bytes += node.end_byte() - node.start_byte();
+            *count += 1;
+            return;
+        }
+        if node.is_missing() {
+            *count += 1;
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, bytes, count);
+        }
+    }
+    let (mut bytes, mut count) = (0, 0);
+    walk(tree.root_node(), &mut bytes, &mut count);
+    (bytes, count)
+}
+
+/// Length-preserving mask over C/C++ sources: blanks annotation macros that
+/// tree-sitter's grammars cannot parse, so the rest of the file parses
+/// cleanly. Only non-newline bytes become spaces, so every byte offset stays
+/// valid against the original source.
+///
+/// - SAL-style annotation tokens (`_In_`, `_out_`, `_ret_`, `_opt_` variants)
+///   are reserved identifiers in C — never real user code.
+/// - An ALL-CAPS token at line start followed by two more words is a
+///   macro-expanded declaration specifier (`SECUREC_INLINE void f()`); three
+///   leading identifiers cannot appear in valid C/C++ otherwise. The
+///   two-token form (`UINT32 x;`) is left alone: it is a typedef declaration.
+fn mask_annotations(source: &str) -> String {
+    use std::sync::OnceLock;
+    static SAL: OnceLock<regex::Regex> = OnceLock::new();
+    static SPEC: OnceLock<regex::Regex> = OnceLock::new();
+    static DECLMACRO: OnceLock<regex::Regex> = OnceLock::new();
+    let sal = SAL.get_or_init(|| {
+        regex::Regex::new(r#"\b_(?:in|out|inout|ret)(?:_opt)?_\b"#).expect("valid sal regex")
+    });
+    let spec = SPEC.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?m)^([ \t]*)([A-Z][A-Z0-9_]*)([ \t]+[A-Za-z_][A-Za-z0-9_]*)([ \t]+[A-Za-z_*&])"#,
+        )
+        .expect("valid specifier regex")
+    });
+    // A bare macro invocation without a trailing `;` alone on a line
+    // (`__decl_clone(E)`, `MY_DECL(x)`) — expands to a declaration, but
+    // tree-sitter sees a call expression missing its `;`. After a few of
+    // these its error recovery desyncs and swallows the rest of the file.
+    // Macro-style names only (`__`-prefixed or containing an uppercase
+    // letter) so `if (x)` bodies like `foo(y)` are left untouched.
+    let declmacro = DECLMACRO.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?m)^[ \t]*(__[A-Za-z0-9_]*|[A-Za-z_]*[A-Z][A-Za-z0-9_]*)[ \t]*\([^;\n]*\)[ \t]*$"#,
+        )
+        .expect("valid decl-macro regex")
+    });
+    let mut out: Vec<u8> = source.as_bytes().to_vec();
+
+    fn blank(bytes: &mut [u8], range: std::ops::Range<usize>) {
+        for b in &mut bytes[range] {
+            if *b != b'\n' && *b != b'\r' {
+                *b = b' ';
+            }
+        }
+    }
+
+    for m in sal.find_iter(source) {
+        // `#define _out_` defines the annotation — masking inside the
+        // directive would leave a nameless `#define` and a fresh error.
+        let line_start = source[..m.start()].rfind('\n').map_or(0, |i| i + 1);
+        let line_prefix = source[line_start..m.start()].trim_start();
+        if line_prefix.starts_with('#') {
+            continue;
+        }
+        blank(&mut out, m.range());
+    }
+    for m in declmacro.find_iter(source) {
+        // A constructor definition whose member-init list or body starts on
+        // the next line (`Ctor(args)\n    : _w(w) {}`) is not a macro — its
+        // invocation line must stay.
+        let next = source[m.end()..]
+            .lines()
+            .map(str::trim_start)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        if next.starts_with(':') || next.starts_with('{') {
+            continue;
+        }
+        blank(&mut out, m.range());
+    }
+
+    // Specifier macros can chain (`SECUREC_INLINE SECUREC_UNUSED void f()`):
+    // blank one per line per pass and repeat until stable.
+    loop {
+        let text = String::from_utf8(out.clone()).expect("mask keeps valid UTF-8");
+        let mut changed = false;
+        for m in spec.captures_iter(&text) {
+            let Some(g) = m.get(2) else { continue };
+            blank(&mut out, g.range());
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    String::from_utf8(out).expect("masking keeps valid UTF-8 (only blanks bytes)")
+}
+
+/// Pick the best parse for C/C++ sources:
+///
+/// 1. A `.h` carrying C++-only markers (`::`, `template`, …) is parsed as C++
+///    outright — the C grammar "succeeds" at parsing C++ into structurally
+///    wrong symbols (namespaces/templates/classes become function nodes) with
+///    deceptively few error nodes, so error metrics are untrustworthy there.
+/// 2. Otherwise `.h` is C — but a C++ parse is still tried when the C parse
+///    has errors (a header that slipped past the sniff), keeping the tree
+///    with the better error profile (fewer error bytes, then fewer error
+///    nodes; ties prefer C).
+/// 3. When the best parse still has errors, retry with annotation macros
+///    masked ([`mask_annotations`]) — the mask is length-preserving, so byte
+///    ranges stay valid against the original source.
+///
+/// A pure function of the source, so the choice is deterministic and
+/// byte-stable.
+fn parse_ambiguous(
+    path: &Path,
+    source: &str,
+    lang: &'static dyn Language,
+) -> Result<(&'static dyn Language, tree_sitter::Tree), SymbolError> {
+    let is_h = lang.name() == "c" && path.extension().and_then(|e| e.to_str()) == Some("h");
+    let cpp: Option<&'static dyn Language> = is_h
+        .then(|| REGISTRY.iter().find(|l| l.name() == "cpp").copied())
+        .flatten();
+    let force_cpp = cpp.is_some() && looks_like_cpp(source);
+    let primary: &'static dyn Language = if force_cpp { cpp.unwrap() } else { lang };
+
+    let direct = parse_tree(primary.grammar_for_path(path), source)?;
+    let mut best = (primary, direct);
+    let mut best_metrics = error_metrics(&best.1);
+
+    if !force_cpp
+        && best_metrics != (0, 0)
+        && let Some(cpp) = cpp
+    {
+        // Skip the C++ parse when C is already clean: cpp cannot beat
+        // (0,0), and ties already prefer C. Halves .h work.
+        let tree = parse_tree(cpp.grammar_for_path(path), source)?;
+        let metrics = error_metrics(&tree);
+        if metrics < best_metrics {
+            best = (cpp, tree);
+            best_metrics = metrics;
+        }
+    }
+
+    if best_metrics != (0, 0) {
+        let masked = mask_annotations(source);
+        let mut candidates: Vec<&'static dyn Language> = vec![primary];
+        if !force_cpp && let Some(cpp) = cpp {
+            candidates.push(cpp);
+        }
+        for candidate in candidates {
+            let tree = parse_tree(candidate.grammar_for_path(path), &masked)?;
+            let metrics = error_metrics(&tree);
+            if metrics < best_metrics {
+                best = (candidate, tree);
+                best_metrics = metrics;
+            }
+        }
+    }
+
+    Ok(best)
+}
+
+/// Heuristic: does this C/C++ source carry C++-only constructs? Used to route
+/// `.h` files (which may be C or C++) to the right grammar. Only markers that
+/// are essentially impossible in valid C are included (a C header mentioning
+/// `::` or `template` is already C++ in spirit).
+fn looks_like_cpp(source: &str) -> bool {
+    use std::sync::OnceLock;
+    static MARKERS: OnceLock<regex::Regex> = OnceLock::new();
+    let re = MARKERS.get_or_init(|| {
+        regex::Regex::new(
+            r#"::|\b(?:template|namespace|typename|constexpr|nullptr|override|decltype|static_cast|dynamic_cast|const_cast|reinterpret_cast|noexcept|virtual|explicit|friend)\b|enum[ \t]+class"#,
+        )
+        .expect("valid cpp marker regex")
+    });
+    re.is_match(source)
 }
 
 /// Detect the language backend for a path, if any.

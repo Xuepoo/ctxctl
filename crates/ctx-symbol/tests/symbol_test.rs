@@ -331,6 +331,10 @@ fn c_path() -> &'static Path {
     Path::new("sample.c")
 }
 
+fn h_path() -> &'static Path {
+    Path::new("sample.h")
+}
+
 fn cpp_path() -> &'static Path {
     Path::new("sample.cpp")
 }
@@ -956,6 +960,135 @@ export const App = () => <><Greeting name="x" /></>;
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"Greeting"), "missing component: {names:?}");
     assert!(names.contains(&"App"), "missing component: {names:?}");
+}
+
+#[test]
+fn h_files_pick_the_cleaner_grammar() {
+    // `.h` is C-or-C++: a C++ header must parse with the cpp grammar (and
+    // report "cpp"), while a plain C header stays "c".
+    let cpp_src = r#"
+#ifndef ATOM_BASIC_H_INCLUDED
+#define ATOM_BASIC_H_INCLUDED
+#include <string>
+using namespace std;
+
+class Atom {
+public:
+  Atom(string name) : name_(name) {}
+private:
+  string name_;
+};
+#endif
+"#;
+    let parsed = ctx_symbol::parse(h_path(), cpp_src).unwrap();
+    assert_eq!(parsed.language.name(), "cpp");
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
+
+    let c_src = r#"
+#ifndef PLAIN_C_H
+#define PLAIN_C_H
+#include <stdio.h>
+typedef struct Point { int x; int y; } Point;
+int add(int a, int b);
+#endif
+"#;
+    let parsed = ctx_symbol::parse(h_path(), c_src).unwrap();
+    assert_eq!(parsed.language.name(), "c");
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
+}
+
+#[test]
+fn h_files_tolerate_annotation_macros() {
+    // SAL annotations, decl-style macro invocations, and ALL-CAPS specifier
+    // macros are common in real headers; the annotation mask must keep the
+    // parse clean without changing byte ranges.
+    let src = r#"
+#ifndef PLAIN_C_H
+#define PLAIN_C_H
+#include <stdio.h>
+
+SECUREC_INLINE void sec_trim(char *buf, size_t n) { (void)buf; (void)n; }
+
+typedef struct Point { int x; int y; } Point;
+int add(int a, int b);
+#endif
+"#;
+    let parsed = ctx_symbol::parse(h_path(), src).unwrap();
+    assert_eq!(parsed.language.name(), "c");
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
+    let names: Vec<String> = ctx_symbol::extract_symbols(&parsed)
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    assert!(names.iter().any(|n| n == "sec_trim"), "missing: {names:?}");
+    assert!(names.iter().any(|n| n == "Point"), "missing: {names:?}");
+
+    // A C++ header with SAL annotations + decl-macro calls must parse clean
+    // with the cpp grammar.
+    let cpp_src = r#"
+#ifndef ATOM_H
+#define ATOM_H
+#include <string>
+using namespace std;
+namespace tex {
+class Box;
+class Atom {
+public:
+    virtual Box* createBox(_out_ int* env) { return nullptr; }
+};
+class EmptyAtom : public Atom {
+public:
+    Box* createBox(_in_ int* env) override { return nullptr; }
+    __decl_clone(EmptyAtom)
+};
+}
+#endif
+"#;
+    let parsed = ctx_symbol::parse(h_path(), cpp_src).unwrap();
+    assert_eq!(parsed.language.name(), "cpp");
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
+    assert!(ctx_symbol::extract_symbols(&parsed).len() >= 2);
+}
+
+#[test]
+fn bare_struct_fold_keeps_the_semicolon() {
+    // A bare `struct Pseudo { … };` at declaration level: the specifier
+    // node's byte range ends at `}`, but the fold must carry the `;` so the
+    // compact view stays parseable.
+    let src = r#"
+struct Pseudo
+{
+    Pseudo() : type(0), negated(false) { }
+    quint64 type;
+    QString name;
+    bool negated;
+};
+"#;
+    let parsed = ctx_symbol::parse(cpp_path(), src).unwrap();
+    let pseudo = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "Pseudo")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &pseudo);
+    assert!(compact.trim_end().ends_with("};"), "closer kept: {compact}");
+    let re = ctx_symbol::parse(cpp_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "reparse: {compact}");
+}
+
+#[test]
+fn cpp_header_with_scope_resolution_routes_to_cpp() {
+    // `::` alone is the strongest C++ signal; without it the C grammar parses
+    // this into a mangled `namespace` function symbol.
+    let src = r#"
+#ifndef X_H
+#define X_H
+namespace foo { struct Bar { int x; }; }
+inline int f() { return foo::k; }
+#endif
+"#;
+    let parsed = ctx_symbol::parse(h_path(), src).unwrap();
+    assert_eq!(parsed.language.name(), "cpp");
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
 }
 
 #[test]

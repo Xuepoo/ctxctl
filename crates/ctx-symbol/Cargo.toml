@@ -8,7 +8,9 @@ homepage.workspace = true
 description = "Reusable symbol engine: tree-sitter AST symbol location + original source slicing for token-efficient code reading."
 
 [dependencies]
+serde.workspace = true
 tree-sitter.workspace = true
+regex.workspace = true
 tree-sitter-rust.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-python.workspace = true
@@ -20,5 +22,4 @@ tree-sitter-cpp.workspace = true
 tree-sitter-c-sharp.workspace = true
 tree-sitter-ruby.workspace = true
 tree-sitter-lua.workspace = true
-serde.workspace = true
 thiserror = "2"

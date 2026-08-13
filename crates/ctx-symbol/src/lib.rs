@@ -49,19 +49,7 @@ pub fn outline(source: &str, path: &std::path::Path) -> Result<Vec<Symbol>, Symb
 /// Number of ERROR/MISSING nodes in the tree (0 = clean parse). Callers can
 /// use this to signal partial symbol lists instead of failing silently.
 pub fn parse_error_count(parsed: &ParsedSource) -> usize {
-    fn walk(node: tree_sitter::Node, count: &mut usize) {
-        if node.is_error() || node.is_missing() {
-            *count += 1;
-            return;
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(child, count);
-        }
-    }
-    let mut count = 0;
-    walk(parsed.tree.root_node(), &mut count);
-    count
+    crate::language::count_error_nodes(&parsed.tree)
 }
 
 /// Compact view of a symbol: signature (and decorators / multi-line signature
@@ -393,7 +381,20 @@ fn fold_at_body_node(
             return None; // single-line brace body
         }
         let middle = &source[opener_nl + 1..closer_line_start];
-        let tail = source[closer_line_start..sym_end].trim_end_matches('\n');
+        // A struct/class/enum specifier's terminating `;` lives OUTSIDE the
+        // specifier node, on the parent declaration. When the fold ends on a
+        // bare closer `}`, carry the same-line `;` so a folded
+        // `struct Pseudo { … };` stays parseable instead of losing its `;`.
+        let mut tail_end = sym_end;
+        if source[closer_line_start..sym_end].trim_end().ends_with('}')
+            && let Some(line) = source[sym_end..].split('\n').next()
+        {
+            let lead = line.len() - line.trim_start_matches([' ', '\t']).len();
+            if line[lead..].starts_with(';') {
+                tail_end = sym_end + lead + 1;
+            }
+        }
+        let tail = source[closer_line_start..tail_end].trim_end_matches('\n');
         let tail_first = tail.lines().next().unwrap_or("");
         if !is_closer(tail_first) {
             return None; // inline `}` in minified source
