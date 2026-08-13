@@ -103,13 +103,17 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
             out
         })
         .unwrap_or_default();
-    // AST-anchored fold: when a body node exists, fold at its boundary. The
-    // line heuristic below is the fallback for body-less definitions (macros,
+    // AST-anchored fold: when a body node exists, fold at its boundary. A
+    // body that is empty or uncloseable is passed through unchanged — it is
+    // not a candidate for the line heuristic (which would mangle e.g. a
+    // constructor with an empty `{ }` or a one-line class stub). The line
+    // heuristic below is the fallback for body-less definitions (macros,
     // forward declarations).
-    if let Some(body) = sym_node.and_then(|n| find_body_node(parsed.language, n))
-        && let Some(ast) = fold_at_body_node(&parsed.source, symbol, &body, parsed)
-    {
-        return ast;
+    if let Some(body) = sym_node.and_then(|n| find_body_node(parsed.language, n)) {
+        return match fold_at_body_node(&parsed.source, symbol, &body, parsed) {
+            Some(ast) => ast,
+            None => text.to_string(),
+        };
     }
     // Symbol-relative index of the first body line (python). The absolute
     // body line is anchored in the AST; subtract the range's first source
@@ -154,9 +158,14 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     }
     if fold_at == lines.len() {
         // No deeper-indented body line followed an opener: fold right after
-        // the last opener (or after the first line if there was none, e.g.
-        // preprocessor macros).
-        fold_at = last_opener.map_or(1, |i| i + 1);
+        // the last opener. With no opener at all, only preprocessor macros
+        // (which splice their body via `\`) are foldable — anything else is a
+        // forward declaration or other body-less definition: pass through.
+        fold_at = match last_opener {
+            Some(i) => i + 1,
+            None if lines[0].trim_start().starts_with('#') => 1,
+            None => return text.to_string(),
+        };
     }
     // A fold boundary must not split a syntactic continuation: a kept line
     // ending with an operator/separator (`,`, `+`, `(`, `=` …) — or a next
@@ -345,47 +354,72 @@ fn fold_at_body_node(
     if body_start <= sym_start || body_end > sym_end || body_start >= body_end {
         return None;
     }
-    // Start of the line containing the body's last byte (the closer line).
-    let last_byte = body_end.saturating_sub(1);
-    let closer_line_start = source[..last_byte]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(sym_start);
-    // Brace bodies (`{` … `}`) keep their opening `{` line in the header;
-    // indentation / keyword bodies (python, ruby, lua) have no opener inside
-    // the body node, so the fold starts at the body's first line.
     let body_first_line = source[body_start..body_end].lines().next().unwrap_or("");
     let brace_body = body_first_line.trim_start().starts_with('{');
-    let (header, middle) = if brace_body {
+
+    if brace_body {
+        // Header = up to and including the `{` line; the closer is the `}`
+        // line inside the body node (with any trailing declarators).
         let opener_nl = source[body_start..sym_end]
             .find('\n')
             .map(|i| body_start + i)
             .unwrap_or(sym_end);
+        let header = &source[sym_start..opener_nl];
+        let last_byte = body_end.saturating_sub(1);
+        let closer_line_start = source[..last_byte]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(sym_start);
         if closer_line_start <= opener_nl {
-            return None; // single-line body: nothing to fold
+            return None; // single-line brace body
         }
-        (
-            &source[sym_start..opener_nl],
-            &source[opener_nl + 1..closer_line_start],
-        )
-    } else {
-        if closer_line_start <= body_start {
+        let middle = &source[opener_nl + 1..closer_line_start];
+        let tail = source[closer_line_start..sym_end].trim_end_matches('\n');
+        let tail_first = tail.lines().next().unwrap_or("");
+        if !is_closer(tail_first) {
+            return None; // inline `}` in minified source
+        }
+        let keep_tail = parsed.language.keeps_brace_closers();
+        let omitted = middle.lines().count() + usize::from(!keep_tail);
+        if omitted == 0 {
             return None;
         }
-        (
-            source[sym_start..body_start].trim_end_matches([' ', '\t', '\r', '\n']),
-            &source[body_start..closer_line_start],
-        )
+        let indent = leading_whitespace(middle.lines().next().unwrap_or(""));
+        let mut out = String::from(header);
+        out.push('\n');
+        out.push_str(indent);
+        out.push_str(parsed.language.comment_prefix());
+        out.push_str(" ... [");
+        out.push_str(&omitted.to_string());
+        out.push_str(" lines omitted]");
+        if keep_tail {
+            out.push('\n');
+            out.push_str(tail);
+        }
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        return Some(out);
+    }
+
+    // Indentation / keyword body (python, ruby, lua): no `{` opener. The
+    // body region runs from the body node start to the symbol end; the last
+    // line is kept only when it is an `end` closer.
+    let header_src = &source[sym_start..body_start];
+    let header = match header_src.rfind('\n') {
+        None => return None,
+        Some(nl) if !header_src[nl + 1..].trim().is_empty() => return None,
+        Some(nl) => header_src[..nl].trim_end(),
     };
-    let tail = source[closer_line_start..sym_end].trim_end_matches('\n');
-    let tail_first = tail.lines().next().unwrap_or("");
-    let keep_tail = is_closer(tail_first)
-        && (parsed.language.keeps_brace_closers() || is_end_closer(tail_first.trim()));
-    let omitted = middle.lines().count() + usize::from(!keep_tail);
+    let body_region = source[body_start..sym_end].trim_end_matches('\n');
+    let body_lines: Vec<&str> = body_region.lines().collect();
+    let last = body_lines.last().copied().unwrap_or("");
+    let keep_closer = is_end_closer(last.trim());
+    let omitted = body_lines.len() - usize::from(keep_closer);
     if omitted == 0 {
         return None;
     }
-    let indent = leading_whitespace(middle.lines().next().unwrap_or(""));
+    let indent = leading_whitespace(body_lines[0]);
     let mut out = String::from(header);
     out.push('\n');
     out.push_str(indent);
@@ -393,9 +427,9 @@ fn fold_at_body_node(
     out.push_str(" ... [");
     out.push_str(&omitted.to_string());
     out.push_str(" lines omitted]");
-    if keep_tail {
+    if keep_closer {
         out.push('\n');
-        out.push_str(tail);
+        out.push_str(last);
     }
     if !out.ends_with('\n') {
         out.push('\n');
@@ -550,7 +584,7 @@ fn boundary_continues(
     }
     if next
         .trim_start()
-        .starts_with(['+', '-', '/', '=', '.', ':', '&', '|', '?', '<'])
+        .starts_with(['+', '-', '/', '=', '.', ':', '&', '|', '?', '<', ';'])
     {
         return true;
     }

@@ -20,7 +20,11 @@ impl Language for CLang {
     }
 
     fn body_node_kinds(&self) -> &[&'static str] {
-        &["compound_statement", "field_declaration_list"]
+        &[
+            "compound_statement",
+            "field_declaration_list",
+            "initializer_list",
+        ]
     }
 
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
