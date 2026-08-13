@@ -317,17 +317,22 @@ jobs:
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          TEST_DIR="$(mktemp -d)"
-          cd "$TEST_DIR"
-          npm init --yes >/dev/null
-          for attempt in $(seq 1 10); do
-            npm install --save-dev "ctxctl@${VERSION}" && break
-            if [ "$attempt" -eq 10 ]; then
-              echo "::error::ctxctl@${VERSION} was not installable after publication"
+          # The registry edge caches can lag a fresh publish; wait until the
+          # version is visible before installing.
+          for attempt in $(seq 1 30); do
+            if npm view "ctxctl@${VERSION}" version >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::ctxctl@${VERSION} never became visible on the registry"
               exit 1
             fi
             sleep 10
           done
+          TEST_DIR="$(mktemp -d)"
+          cd "$TEST_DIR"
+          npm init --yes >/dev/null
+          npm install --save-dev "ctxctl@${VERSION}"
           INSTALLED_VERSION="$(./node_modules/.bin/ctxctl --version)"
           case "$INSTALLED_VERSION" in
             *"$VERSION"*) ;;
@@ -348,21 +353,21 @@ jobs:
         with:
           pattern: ctxctl-*
           merge-multiple: true
-      - name: Create release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            ctxctl-x86_64-unknown-linux-gnu
-            ctxctl-aarch64-unknown-linux-gnu
-            ctxctl-x86_64-apple-darwin
-            ctxctl-aarch64-apple-darwin
-            ctxctl-x86_64-pc-windows-msvc.exe
-            *.deb
-            *.rpm
-            *.apk
-            *.pkg.tar.zst
-          name: v${{ needs.verify.outputs.version }}
-          draft: false
-          prerelease: false
+      - name: Create release (skip if it already exists)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "release v${VERSION} already exists, skipping"
+            exit 0
+          fi
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "See CHANGELOG.md for details." \
+            ctxctl-x86_64-unknown-linux-gnu \
+            ctxctl-aarch64-unknown-linux-gnu \
+            ctxctl-x86_64-apple-darwin \
+            ctxctl-aarch64-apple-darwin \
+            ctxctl-x86_64-pc-windows-msvc.exe \
+            ./*.deb ./*.rpm ./*.apk ./*.pkg.tar.zst
