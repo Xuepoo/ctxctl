@@ -67,6 +67,23 @@ pub trait Language: Send + Sync {
         "//"
     }
 
+    /// True if `}`/`)`/`]` lines may be kept as block closers in compact
+    /// views. False for languages without brace/paren block syntax (python:
+    /// indentation; ruby: `end`).
+    fn keeps_brace_closers(&self) -> bool {
+        true
+    }
+
+    /// 1-based source line where the definition's body begins (the first
+    /// line after the signature), when the backend can anchor it in the AST.
+    /// Backends with indentation-based blocks (python) must provide this —
+    /// line heuristics cannot tell `def f():  # comment` (a signature with a
+    /// trailing comment, which does not end in `:`) from docstring prose
+    /// like `Args:`.
+    fn body_start_line(&self, _parsed: &ParsedSource, _node: &tree_sitter::Node) -> Option<usize> {
+        None
+    }
+
     /// True if a line opens a block, so the compact view folds after it.
     ///
     /// Default: lines ending with `{` or `:` (python) plus lines starting
@@ -159,22 +176,22 @@ pub fn extract_symbols(parsed: &ParsedSource) -> Vec<Symbol> {
 
 fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut Vec<Symbol>) {
     let kind = node.kind();
-    if let Some(sym_kind) = is_definition(parsed.language, kind) {
-        if let Some(name) = parsed.language.symbol_name(&node, &parsed.source) {
-            let range = parsed.language.definition_byte_range(&node);
-            let sig = parsed.language.signature(&node, &parsed.source);
-            let (start, end) = (node.start_position(), node.end_position());
-            let doc = parsed.language.doc_comment(parsed, &node);
-            out.push(Symbol {
-                name,
-                kind: sym_kind,
-                start_line: start.row + 1,
-                end_line: end.row + 1,
-                byte_range: range,
-                signature: sig,
-                doc_comment: doc,
-            });
-        }
+    if let Some(sym_kind) = is_definition(parsed.language, kind)
+        && let Some(name) = parsed.language.symbol_name(&node, &parsed.source)
+    {
+        let range = parsed.language.definition_byte_range(&node);
+        let sig = parsed.language.signature(&node, &parsed.source);
+        let (start, end) = (node.start_position(), node.end_position());
+        let doc = parsed.language.doc_comment(parsed, &node);
+        out.push(Symbol {
+            name,
+            kind: sym_kind,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+            byte_range: range,
+            signature: sig,
+            doc_comment: doc,
+        });
     }
     if node.child_count() > 0 {
         let mut child = node.walk();

@@ -643,6 +643,85 @@ fn assert_compacts_reparse(src: &str, path: &Path) {
 }
 
 #[test]
+fn compact_comment_quotes_do_not_break_folding() {
+    // A `"` inside a body comment must not toggle the multi-line-string
+    // state; the body still folds and re-parses.
+    let src = r#"
+export function foo(x) {
+  const a = 1;
+  // " odd quote in comment
+  const b = 2;
+  const c = 3;
+  return a + b;
+}
+"#;
+    let parsed = ctx_symbol::parse(ts_path(), src).unwrap();
+    let foo = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "foo")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &foo);
+    assert!(
+        compact.contains("... [5 lines omitted]"),
+        "compact: {compact}"
+    );
+    assert!(compact.contains('}'), "closer kept: {compact}");
+    let re = ctx_symbol::parse(ts_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "reparse: {compact}");
+}
+
+#[test]
+fn compact_hash_comments_are_not_preprocessor_directives() {
+    // Python `#` lines inside a body are comments, not preprocessor
+    // directives — folding must proceed (and re-parse).
+    let src = r#"
+def foo(x):
+    a = 1
+    # " odd quote in comment
+    b = 2
+    c = 3
+    return a + b
+"#;
+    let parsed = ctx_symbol::parse(py_path(), src).unwrap();
+    let foo = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "foo")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &foo);
+    assert!(
+        compact.contains("... [5 lines omitted]"),
+        "compact: {compact}"
+    );
+    let re = ctx_symbol::parse(py_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "reparse: {compact}");
+}
+
+#[test]
+fn compact_paren_in_comment_does_not_hold_open_balance() {
+    // A `(` inside a comment must not count as a pending opener; otherwise
+    // the fold slides to the end of the body.
+    let src = r#"
+def foo(x):
+    a = 1
+    # unbalanced ( in comment
+    b = 2
+    return a + b
+"#;
+    let parsed = ctx_symbol::parse(py_path(), src).unwrap();
+    let foo = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "foo")
+        .unwrap();
+    let compact = ctx_symbol::compact_symbol(&parsed, &foo);
+    assert!(
+        compact.contains("... [4 lines omitted]"),
+        "compact: {compact}"
+    );
+    let re = ctx_symbol::parse(py_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "reparse: {compact}");
+}
+
+#[test]
 fn compact_preproc_macro_drops_closer() {
     // A `\`-continued macro: the fold marker splices into the directive, so
     // the `} while (0)` closer must not be kept outside it.

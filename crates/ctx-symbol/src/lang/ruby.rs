@@ -57,6 +57,10 @@ impl Language for RubyLang {
         "#"
     }
 
+    fn keeps_brace_closers(&self) -> bool {
+        false
+    }
+
     fn is_opener_line(&self, line: &str) -> bool {
         // Ruby blocks open with keywords, not braces: `def`, `class`,
         // `module`, `if`, `unless`, `begin`, `while`, `until`, `for`,

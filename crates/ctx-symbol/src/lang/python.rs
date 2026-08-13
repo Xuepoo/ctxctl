@@ -60,6 +60,37 @@ impl Language for PythonLang {
         "#"
     }
 
+    fn keeps_brace_closers(&self) -> bool {
+        false
+    }
+
+    fn body_start_line(&self, _parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<usize> {
+        // The body block starts right after the signature line — exact even
+        // with trailing comments or docstring content that looks like `x:`.
+        let def = if node.kind() == "decorated_definition" {
+            node.child_by_field_name("definition")?
+        } else {
+            *node
+        };
+        let body = def.child_by_field_name("body")?;
+        let body_row = body.start_position().row;
+        // Does the body share a line with the signature's tail (`): T: ...`
+        // stubs, where folding after the body line would cut the signature)?
+        let shares_line = def
+            .child_by_field_name("parameters")
+            .is_some_and(|p| p.end_position().row == body_row)
+            || def
+                .child_by_field_name("return_type")
+                .is_some_and(|r| r.end_position().row == body_row);
+        if shares_line && body_row == body.end_position().row {
+            // Stub: the whole body (`...`) sits on the signature line. Fold
+            // after it; when that is the symbol's last line the caller's
+            // clamp turns this into a passthrough.
+            return Some(body_row + 2);
+        }
+        Some(body_row + 1)
+    }
+
     fn definition_byte_range(&self, node: &tree_sitter::Node) -> std::ops::Range<usize> {
         // A decorated definition (`@deco` lines) wraps the function/class
         // node; include the decorators so slices carry the full semantics.
@@ -85,27 +116,25 @@ impl Language for PythonLang {
         };
         // Python idiom: a string-literal expression statement directly above
         // the definition is the docstring (takes priority over comments).
-        if let Some(prev) = effective.prev_sibling() {
-            if prev.kind() == "expression_statement" {
-                // The module docstring is the first statement of the module;
-                // it documents the module, not the first symbol below it.
-                // Skip comment siblings when checking (comments are not
-                // statements in Python semantics).
-                let mut prev_statement = prev.prev_sibling();
-                while prev_statement.is_some_and(|s| s.kind().contains("comment")) {
-                    prev_statement = prev_statement.unwrap().prev_sibling();
-                }
-                let is_module_doc =
-                    prev.parent().is_some_and(|p| p.kind() == "module") && prev_statement.is_none();
-                if !is_module_doc {
-                    if let Some(first) = prev.named_child(0) {
-                        if first.kind() == "string" {
-                            if let Some(doc) = string_literal_text(first, &parsed.source) {
-                                return Some(doc);
-                            }
-                        }
-                    }
-                }
+        if let Some(prev) = effective.prev_sibling()
+            && prev.kind() == "expression_statement"
+        {
+            // The module docstring is the first statement of the module;
+            // it documents the module, not the first symbol below it.
+            // Skip comment siblings when checking (comments are not
+            // statements in Python semantics).
+            let mut prev_statement = prev.prev_sibling();
+            while prev_statement.is_some_and(|s| s.kind().contains("comment")) {
+                prev_statement = prev_statement.unwrap().prev_sibling();
+            }
+            let is_module_doc =
+                prev.parent().is_some_and(|p| p.kind() == "module") && prev_statement.is_none();
+            if !is_module_doc
+                && let Some(first) = prev.named_child(0)
+                && first.kind() == "string"
+                && let Some(doc) = string_literal_text(first, &parsed.source)
+            {
+                return Some(doc);
             }
         }
         // `# comment` siblings work through the generic scan.
@@ -133,13 +162,13 @@ impl Language for PythonLang {
                         "aliased_import" => kid.named_child(0),
                         _ => None,
                     };
-                    if let Some(name) = name {
-                        if let Ok(target) = name.utf8_text(source.as_bytes()) {
-                            out.push(crate::imports::ImportTarget {
-                                target: target.trim().to_string(),
-                                relative: false,
-                            });
-                        }
+                    if let Some(name) = name
+                        && let Ok(target) = name.utf8_text(source.as_bytes())
+                    {
+                        out.push(crate::imports::ImportTarget {
+                            target: target.trim().to_string(),
+                            relative: false,
+                        });
                     }
                 }
                 out
