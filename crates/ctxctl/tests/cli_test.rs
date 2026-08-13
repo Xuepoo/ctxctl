@@ -76,7 +76,7 @@ fn outline_text_reports_symbols_and_savings() {
     assert!(text.contains("saved ~"), "missing savings: {text}");
     assert!(text.contains("L:4-6"), "no line numbers: {text}");
     assert!(
-        text.contains("pub fn add(a: i32, b: i32) -> i32 {"),
+        text.contains("pub fn add(a: i32, b: i32) -> i32"),
         "no signature: {text}"
     );
     assert!(text.contains("struct  Point"), "unexpected: {text}");
@@ -107,6 +107,29 @@ fn outline_json_contract() {
         first.get("doc_comment").is_some(),
         "doc_comment should be present by default"
     );
+    // tokens_after counts the actual payload bytes; on a tiny fixture the
+    // JSON envelope can rival the file, so only sanity bounds apply here.
+    assert!(value["saved"]["tokens_before"].as_u64().unwrap() > 0);
+    assert!(value["saved"]["tokens_after"].as_u64().unwrap() > 0);
+    assert!(value["saved"]["percent"].as_u64().unwrap() <= 100);
+}
+
+#[test]
+fn outline_saved_reflects_actual_output_size() {
+    let dir = tmp_dir("outline-large");
+    let path = dir.join("big.rs");
+    let mut src = String::new();
+    for i in 0..20 {
+        src.push_str(&format!("pub fn func_{i}(a: i32, b: i32) -> i32 {{\n"));
+        for j in 0..25 {
+            src.push_str(&format!("    let v{j} = a * {j} + b - {i};\n"));
+        }
+        src.push_str("    a + b\n}\n");
+    }
+    std::fs::write(&path, &src).expect("write fixture");
+    let output = run(&["outline", "--json", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
     assert!(value["saved"]["percent"].as_u64().unwrap() > 0);
     assert!(
         value["saved"]["tokens_before"].as_u64().unwrap()
@@ -152,9 +175,9 @@ fn python_outline_text_and_json() {
     let output = run(&["outline", PY_FIXTURE]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let text = stdout(&output);
-    assert!(text.contains("class Point:"), "unexpected: {text}");
+    assert!(text.contains("class Point"), "unexpected: {text}");
     assert!(
-        text.contains("def add(a: int, b: int) -> int:"),
+        text.contains("def add(a: int, b: int) -> int"),
         "unexpected: {text}"
     );
 
@@ -637,7 +660,7 @@ fn symbol_signature_only() {
     assert!(text.contains("saved ~"), "missing savings: {text}");
     assert!(
         text.trim_end()
-            .ends_with("pub fn add(a: i32, b: i32) -> i32 {"),
+            .ends_with("pub fn add(a: i32, b: i32) -> i32"),
         "unexpected: {text}"
     );
     assert!(
@@ -1395,4 +1418,93 @@ fn deps_slash_ignore_pattern_matches_relative_import() {
     assert_eq!(imports.len(), 1);
     assert_eq!(imports[0]["target"], "./helper");
     assert_eq!(imports[0]["kind"], "ignored");
+}
+
+#[test]
+fn outline_signals_parse_failure() {
+    let dir = tmp_dir("outline-parse-error");
+    let path = dir.join("broken.ts");
+    std::fs::write(&path, "fn one() {}\n").expect("write fixture");
+
+    let output = run(&["outline", "--json", path.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "parse failure must exit 3, stdout: {}",
+        stdout(&output)
+    );
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert!(
+        value["parse_error"]["count"].as_u64().unwrap() > 0,
+        "missing parse_error signal: {value}"
+    );
+    assert!(value["symbols"].as_array().is_some(), "no symbols key");
+
+    let output = run(&["outline", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        stderr(&output).contains("parse failed"),
+        "missing warning: {}",
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("0 symbols"));
+
+    let output = run(&["outline", "--json", JS_FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "valid file must stay 0");
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert!(
+        value.get("parse_error").is_none(),
+        "no signal on clean parse"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_project_config_is_followed() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp_dir("symlink-config");
+    let real = root.join("real/.ctxctl");
+    std::fs::create_dir_all(&real).expect("create real config dir");
+    std::fs::write(
+        real.join("config.toml"),
+        "[exec]\nkeep = [\"golden-marker\"]\n",
+    )
+    .expect("write config");
+
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).expect("create work dir");
+
+    // Case 1: the config.toml file itself is a symlink.
+    let link_dir = work.join(".ctxctl");
+    std::fs::create_dir_all(&link_dir).expect("create link dir");
+    symlink(real.join("config.toml"), link_dir.join("config.toml")).expect("link file");
+
+    let mut out = String::new();
+    for i in 0..40 {
+        out.push_str(&format!("noise line {i}\n"));
+    }
+    out.push_str("golden-marker: this line must survive\n");
+    let cmd = "cat testdata.txt";
+    let data = work.join("testdata.txt");
+    std::fs::write(&data, &out).expect("write data");
+
+    let output = run_in(&work, &["exec", cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        body(&output).contains("golden-marker"),
+        "symlinked config.toml not applied: {}",
+        stdout(&output)
+    );
+
+    // Case 2: the whole .ctxctl directory is a symlink.
+    std::fs::remove_dir_all(work.join(".ctxctl")).expect("remove link dir");
+    symlink(&real, work.join(".ctxctl")).expect("link dir");
+    let output = run_in(&work, &["exec", cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        body(&output).contains("golden-marker"),
+        "symlinked .ctxctl dir not applied: {}",
+        stdout(&output)
+    );
 }
