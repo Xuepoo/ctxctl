@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [0.1.1] - 2026-08-13
+
+### Changed
+
+- **`outline` saved accounting now measures actual output** — `tokens_after`
+  counts the bytes actually delivered (the rendered symbol list / serialized
+  JSON payload), not the sum of per-symbol slice estimates. Nested
+  definitions are no longer double-counted, so `saved ~0%` on large files
+  with real ~75% savings is gone (issue #2).
+- **`outline` signals parse failures** — a broken file no longer masquerades
+  as "0 symbols, saved 100%". JSON gains a `parse_error` field, text mode
+  prints a warning on stderr, and the exit code is 3 while the partial
+  symbol list is still delivered (issue #3).
+
+### Fixed
+
+- **Clean signatures** — outline rows no longer end in dangling `(`/`{`/`:`
+  from multi-line declarations; trailing comments are dropped, attribute and
+  decorator lines are skipped, long signatures are capped with an ellipsis.
+- **`mod` items are `module` kind** — rust `mod foo;` was reported as `type`
+  in outlines and JSON output.
+- **Symlinked project config** — regression tests pin that a symlinked
+  `.ctxctl/config.toml` (file or directory) is followed during walk-up
+  discovery (issue #4).
+- **release workflow** — recognize cargo's current "already exists on
+  crates.io" wording so re-runs tolerate already-published crates; drop
+  homebrew/scoop/docker publishing jobs.
+
 ## [0.1.0] - 2026-08-13
 
 ### Added

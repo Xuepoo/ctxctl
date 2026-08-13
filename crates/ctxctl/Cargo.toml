@@ -10,8 +10,8 @@ name = "ctxctl"
 path = "src/main.rs"
 
 [dependencies]
-ctx-symbol = { path = "../ctx-symbol", version = "0.1.0" }
-ctx-exec = { path = "../ctx-exec", version = "0.1.0" }
+ctx-symbol.workspace = true
+ctx-exec.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
