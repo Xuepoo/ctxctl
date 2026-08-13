@@ -63,6 +63,10 @@ fn stderr(output: &Output) -> String {
 
 fn tmp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ctxctl-it-{name}"));
+    // tmp_dir uses a fixed path per test name; clear any stale state from a
+    // previous run so re-running the suite is deterministic (e.g. a leftover
+    // symlink would otherwise fail with "File exists").
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
