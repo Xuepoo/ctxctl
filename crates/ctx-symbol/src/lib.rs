@@ -46,6 +46,24 @@ pub fn outline(source: &str, path: &std::path::Path) -> Result<Vec<Symbol>, Symb
     Ok(extract_symbols(&parsed))
 }
 
+/// Number of ERROR/MISSING nodes in the tree (0 = clean parse). Callers can
+/// use this to signal partial symbol lists instead of failing silently.
+pub fn parse_error_count(parsed: &ParsedSource) -> usize {
+    fn walk(node: tree_sitter::Node, count: &mut usize) {
+        if node.is_error() || node.is_missing() {
+            *count += 1;
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, count);
+        }
+    }
+    let mut count = 0;
+    walk(parsed.tree.root_node(), &mut count);
+    count
+}
+
 /// Compact view of a symbol: signature (and decorators / multi-line signature
 /// lines) plus a fold marker replacing the body, keeping the closing line
 /// (e.g. `}`) when the body ends with one.
