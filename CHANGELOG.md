@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 
+- **Real token accounting** — `saved%` metrics now use the cl100k_base BPE
+  tokenizer (GPT-4-class) instead of the 4-bytes-per-token approximation;
+  CJK-heavy text is counted accurately and counts stay a deterministic
+  function of the input (byte stability unaffected).
 - **AST-anchored compact folds (M1)** — `compact` now folds at the
   tree-sitter body node of a definition instead of guessing from line
   heuristics: brace bodies keep the header through the opening `{` and the
