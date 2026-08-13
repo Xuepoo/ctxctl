@@ -202,9 +202,15 @@ fn run_outline(
     let parsed = parse_or(path, &source)?;
     let symbols = ctx_symbol::extract_symbols(&parsed);
     let file_tokens = tokens(&source);
-    let delivered_tokens: usize = symbols.iter().map(|s| s.estimated_tokens()).sum();
-    let saved = saved_pct(file_tokens, delivered_tokens);
     let show_doc = config.outline.show_doc && !no_doc;
+
+    // Parse failures are signaled, not hidden: tree-sitter recovers, so the
+    // partial symbol list is still delivered, but the JSON envelope gains a
+    // `parse_error` field, text mode prints a warning on stderr, and the
+    // exit code is 3 (§4.1) so agents can tell "no symbols" from "broken
+    // syntax".
+    let parse_errors = ctx_symbol::parse_error_count(&parsed);
+    let parse_failed = parse_errors > 0;
 
     if format == Format::Json {
         let entries: Vec<serde_json::Value> = symbols
@@ -218,30 +224,29 @@ fn run_outline(
             "language": parsed.language.name(),
             "symbols": entries,
         });
+        if parse_failed {
+            payload["parse_error"] = json!({
+                "count": parse_errors,
+                "message": "tree-sitter reported syntax errors; symbol list may be incomplete",
+            });
+        }
         if show_saved {
+            // `tokens_after` counts the bytes actually delivered (the
+            // serialized payload), not a sum of symbol slice estimates.
+            let delivered_tokens = tokens(&payload.to_string());
             payload["saved"] = json!({
                 "tokens_before": file_tokens,
                 "tokens_after": delivered_tokens,
-                "percent": saved,
+                "percent": saved_pct(file_tokens, delivered_tokens),
             });
         }
         println!("{payload}");
-        return Ok(ExitCode::SUCCESS);
+        return Ok(if parse_failed {
+            ExitCode::from(3)
+        } else {
+            ExitCode::SUCCESS
+        });
     }
-
-    let header = if show_saved {
-        format!(
-            "# {}  [{} symbols, {} -> {} tokens, saved ~{}%]",
-            path.display(),
-            symbols.len(),
-            human_bytes(source.len()),
-            group(delivered_tokens),
-            saved,
-        )
-    } else {
-        format!("# {}  [{} symbols]", path.display(), symbols.len())
-    };
-    println!("{header}");
 
     // [outline] fold_threshold (§7): fold the symbol list in text mode when it
     // exceeds the threshold. JSON stays complete (machine contract).
@@ -253,6 +258,7 @@ fn run_outline(
         &symbols
     };
 
+    let mut body = String::new();
     if !shown.is_empty() {
         let name_w = shown
             .iter()
@@ -268,19 +274,51 @@ fn run_outline(
             } else {
                 format!("L:{}-{}", s.start_line, s.end_line)
             };
-            println!(
-                "  {:<7} {:<name_w$} {:<9}    {}",
+            body.push_str(&format!(
+                "  {:<7} {:<name_w$} {:<9}    {}\n",
                 kind_alias(s.kind),
                 s.name,
                 loc,
                 s.signature,
-            );
+            ));
         }
     }
     if folded {
-        println!("  ... [{} symbols omitted]", symbols.len() - fold_limit);
+        body.push_str(&format!(
+            "  ... [{} symbols omitted]\n",
+            symbols.len() - fold_limit
+        ));
     }
-    Ok(ExitCode::SUCCESS)
+
+    // `tokens_after` measures the bytes actually delivered (the symbol list
+    // render), not a sum of symbol slice estimates — nested definitions used
+    // to be double-counted, inflating the estimate beyond the file itself.
+    let delivered_tokens = tokens(&body);
+    let saved = saved_pct(file_tokens, delivered_tokens);
+    let header = if show_saved {
+        format!(
+            "# {}  [{} symbols, {} -> {} tokens, saved ~{}%]",
+            path.display(),
+            symbols.len(),
+            human_bytes(source.len()),
+            group(delivered_tokens),
+            saved,
+        )
+    } else {
+        format!("# {}  [{} symbols]", path.display(), symbols.len())
+    };
+    print!("{header}\n{body}");
+    if parse_failed {
+        eprintln!(
+            "warning: parse failed ({} error node(s)); symbol list may be incomplete",
+            parse_errors
+        );
+    }
+    Ok(if parse_failed {
+        ExitCode::from(3)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn run_symbol(
@@ -728,6 +766,7 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Variable => "var",
         SymbolKind::Trait => "trait",
         SymbolKind::Type => "type",
+        SymbolKind::Module => "module",
     }
 }
 
@@ -743,6 +782,7 @@ fn kind_alias(kind: SymbolKind) -> &'static str {
         SymbolKind::Variable => "var",
         SymbolKind::Trait => "trait",
         SymbolKind::Type => "type",
+        SymbolKind::Module => "mod",
     }
 }
 
