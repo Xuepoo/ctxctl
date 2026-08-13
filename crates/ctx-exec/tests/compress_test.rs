@@ -2,7 +2,8 @@
 //! custom keep patterns, collapse threshold, byte stability, and edge cases.
 
 use ctx_exec::{
-    CompressOptions, DEFAULT_HEAD_LINES, DEFAULT_TAIL_LINES, compress, estimate_tokens,
+    CompressOptions, DEFAULT_HEAD_LINES, DEFAULT_TAIL_LINES, StreamCompressor, compress,
+    estimate_tokens,
 };
 
 fn opts() -> CompressOptions {
@@ -220,4 +221,127 @@ fn per_pattern_anchors_survive_individual_compilation() {
     let result = compress(&input, &custom).unwrap();
     assert!(!result.text.contains("xxPASSxx"), "unanchored match leaked");
     assert!(result.text.contains("PASS: real hit"));
+}
+
+/// Feed `bytes` through a fresh `StreamCompressor` and return the result.
+fn stream_bytes(bytes: &[u8], options: &CompressOptions) -> ctx_exec::CompressResult {
+    let mut sc = StreamCompressor::new(options).unwrap();
+    sc.push(bytes);
+    sc.finish()
+}
+
+#[test]
+fn stream_compressor_matches_batch_output() {
+    // Mixed content: head, critical middle lines, blank lines, tail.
+    let mut input = lines(12, "l");
+    input.push_str("\nerror: something broke\n\nTODO: fix me\n");
+    input.push_str(&lines(12, "m"));
+    let batch = compress(&input, &opts()).unwrap();
+    let streamed = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(streamed.text, batch.text);
+    assert_eq!(streamed.stats, batch.stats);
+}
+
+#[test]
+fn stream_compressor_tolerates_arbitrary_chunk_boundaries() {
+    // Chunks may split lines, multi-byte characters, and terminators.
+    let mut input = lines(30, "你好").clone();
+    input.push_str("\nwarning: 中文告警\n");
+    input.push_str(&lines(30, "m"));
+    let batch = compress(&input, &opts()).unwrap();
+    let bytes = input.as_bytes();
+    let mut sc = StreamCompressor::new(&opts()).unwrap();
+    let mut i = 0;
+    let mut step = 1;
+    while i < bytes.len() {
+        let end = (i + step).min(bytes.len());
+        sc.push(&bytes[i..end]);
+        i = end;
+        step = step % 7 + 1;
+    }
+    let streamed = sc.finish();
+    assert_eq!(
+        streamed.text, batch.text,
+        "streamed: {}\nbatch: {}",
+        streamed.text, batch.text
+    );
+}
+
+#[test]
+fn stream_compressor_preserves_crlf_passthrough() {
+    // Small CRLF outputs pass through byte-verbatim, like `compress`.
+    let input = "a\r\nb\r\nc\r\n";
+    let batch = compress(input, &opts()).unwrap();
+    assert_eq!(batch.text, input);
+    let streamed = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(streamed.text, input);
+    assert_eq!(streamed.stats, batch.stats);
+}
+
+#[test]
+fn stream_compressor_normalizes_crlf_in_compressed_mode() {
+    // Large CRLF outputs normalize to LF exactly like the batch path.
+    let mut input = String::new();
+    for i in 1..=30 {
+        input.push_str(&format!("line {i}\r\n"));
+    }
+    let batch = compress(&input, &opts()).unwrap();
+    assert!(!batch.text.contains('\r'));
+    let streamed = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(streamed.text, batch.text);
+    assert_eq!(streamed.stats, batch.stats);
+}
+
+#[test]
+fn stream_compressor_no_tail_or_head() {
+    let mut options = opts();
+    options.head_lines = 0;
+    options.tail_lines = 0;
+    let mut input = lines(10, "l");
+    input.push_str("\nerror: kept\n");
+    input.push_str(&lines(10, "m"));
+    let batch = compress(&input, &options).unwrap();
+    let streamed = stream_bytes(input.as_bytes(), &options);
+    assert_eq!(streamed.text, batch.text);
+    assert_eq!(streamed.stats, batch.stats);
+    assert!(streamed.text.starts_with("... [10 lines omitted]"));
+}
+
+#[test]
+fn stream_compressor_unterminated_final_line() {
+    let mut input = lines(40, "l");
+    input.push_str("\nfatal: no trailing newline");
+    let batch = compress(&input, &opts()).unwrap();
+    let streamed = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(streamed.text, batch.text);
+    assert_eq!(streamed.stats, batch.stats);
+    assert!(streamed.text.ends_with("fatal: no trailing newline"));
+}
+
+#[test]
+fn stream_compressor_is_byte_stable() {
+    let mut input = lines(60, "l");
+    input.push_str("\nerror: boom\n");
+    input.push_str(&lines(60, "m"));
+    let a = stream_bytes(input.as_bytes(), &opts());
+    let b = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(a.text, b.text);
+    assert_eq!(a.stats, b.stats);
+}
+
+#[test]
+fn stream_compressor_handles_ten_million_plain_lines() {
+    // Memory-bounded streaming: the uninteresting bulk is counted, not kept.
+    let mut sc = StreamCompressor::new(&opts()).unwrap();
+    let mut line = String::from("plain data\n");
+    for _ in 0..10_000 {
+        sc.push(line.as_bytes());
+    }
+    line.clear();
+    line.push_str("plain data");
+    sc.push(line.as_bytes());
+    let result = sc.finish();
+    assert_eq!(result.stats.total_lines, 10_001);
+    assert!(result.stats.kept_lines < 200);
+    assert!(result.stats.saved_percent > 90);
 }

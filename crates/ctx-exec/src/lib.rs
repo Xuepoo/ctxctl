@@ -101,63 +101,123 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// and every line matching a default keep pattern or a user `--keep` pattern.
 /// Omitted runs between kept lines fold into a single `... [N lines omitted]`
 /// marker.
+///
+/// This is the one-shot entry point; it feeds the whole text through a
+/// [`StreamCompressor`], so both paths render byte-identical output.
 pub fn compress(output: &str, options: &CompressOptions) -> Result<CompressResult, ExecError> {
-    let lines: Vec<&str> = output.lines().collect();
-    let total = lines.len();
-    let original_tokens = estimate_tokens(output);
-    let matcher = KeepMatcher::new(options)?;
-
-    if total <= options.collapse_threshold {
-        return Ok(CompressResult {
-            text: output.to_string(),
-            stats: CompressStats {
-                total_lines: total,
-                kept_lines: total,
-                omitted_lines: 0,
-                original_tokens,
-                compressed_tokens: original_tokens,
-                saved_percent: 0,
-            },
-        });
-    }
-
-    let mut kept = Vec::with_capacity(total);
-    for (i, line) in lines.iter().enumerate() {
-        let in_summary = i < options.head_lines || i >= total.saturating_sub(options.tail_lines);
-        kept.push(in_summary || matcher.is_match(line));
-    }
-    let kept_lines = kept.iter().filter(|k| **k).count();
-
-    let text = render(&lines, &kept);
-    let compressed_tokens = estimate_tokens(&text);
-    let saved_percent = saved_pct(original_tokens, compressed_tokens);
-
-    Ok(CompressResult {
-        text,
-        stats: CompressStats {
-            total_lines: total,
-            kept_lines,
-            omitted_lines: total - kept_lines,
-            original_tokens,
-            compressed_tokens,
-            saved_percent,
-        },
-    })
+    let mut compressor = StreamCompressor::new(options)?;
+    compressor.push(output.as_bytes());
+    Ok(compressor.finish())
 }
 
-/// Render the kept-line mask into the final text with omission markers.
-fn render(lines: &[&str], kept: &[bool]) -> String {
-    let mut out = String::new();
-    let mut omitted = 0usize;
-    let mut first = true;
-    for (i, line) in lines.iter().enumerate() {
-        if kept[i] {
-            if omitted > 0 {
+/// Streaming compressor: feed raw output bytes incrementally (as a command
+/// produces them) and render the same compressed view as [`compress`] on
+/// finish. Memory stays bounded by the head/tail windows and the lines that
+/// match keep patterns — the mass of uninteresting middle lines is only
+/// counted, never stored, so a command emitting gigabytes cannot exhaust
+/// memory.
+///
+/// Deterministic: for a given byte stream and options, [`StreamCompressor::finish`]
+/// always returns the same result, byte-stable with [`compress`].
+pub struct StreamCompressor {
+    matcher: KeepMatcher,
+    head_lines: usize,
+    tail_lines: usize,
+    collapse_threshold: usize,
+    /// Total lines seen so far (including a final unterminated line).
+    total: usize,
+    /// Completed head lines (the first `head_lines` lines).
+    head: Vec<String>,
+    /// The last `tail_lines` lines with their keep-pattern match flags.
+    ring: std::collections::VecDeque<(String, bool)>,
+    /// Keep-pattern matches that left the tail window: `(omitted_run_before, line)`.
+    kept_mid: Vec<(usize, String)>,
+    /// Consecutive non-kept middle lines since the last kept line.
+    run: usize,
+    /// Incremental cl100k token count of the raw bytes fed so far.
+    raw_tokens: usize,
+    /// Raw bytes of the first `collapse_threshold` lines, held verbatim for
+    /// the passthrough case.
+    prefix: Vec<u8>,
+    /// Number of complete lines buffered in `prefix`.
+    prefix_lines: usize,
+    /// Bytes of the current (unterminated) line.
+    pending: Vec<u8>,
+}
+
+impl StreamCompressor {
+    /// Create a streaming compressor for `options`.
+    pub fn new(options: &CompressOptions) -> Result<Self, ExecError> {
+        Ok(Self {
+            matcher: KeepMatcher::new(options)?,
+            head_lines: options.head_lines,
+            tail_lines: options.tail_lines,
+            collapse_threshold: options.collapse_threshold,
+            total: 0,
+            head: Vec::new(),
+            ring: std::collections::VecDeque::new(),
+            kept_mid: Vec::new(),
+            run: 0,
+            raw_tokens: 0,
+            prefix: Vec::new(),
+            prefix_lines: 0,
+            pending: Vec::new(),
+        })
+    }
+
+    /// Feed a chunk of raw output bytes. Chunks may split lines anywhere.
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
+            let chunk: Vec<u8> = self.pending.drain(..=pos).collect();
+            let mut line = chunk.as_slice();
+            line = &line[..line.len() - 1]; // strip '\n'
+            if line.last() == Some(&b'\r') {
+                line = &line[..line.len() - 1];
+            }
+            self.consume(chunk.as_slice(), line);
+        }
+    }
+
+    /// Render the final compressed view and statistics.
+    pub fn finish(mut self) -> CompressResult {
+        if !self.pending.is_empty() {
+            // Final unterminated line: `str::lines` keeps a trailing `\r`
+            // here, so no stripping.
+            let chunk = std::mem::take(&mut self.pending);
+            self.consume(&chunk, &chunk);
+        }
+        if self.total <= self.collapse_threshold {
+            let text = String::from_utf8_lossy(&self.prefix).into_owned();
+            let tokens = estimate_tokens(&text);
+            return CompressResult {
+                text,
+                stats: CompressStats {
+                    total_lines: self.total,
+                    kept_lines: self.total,
+                    omitted_lines: 0,
+                    original_tokens: tokens,
+                    compressed_tokens: tokens,
+                    saved_percent: 0,
+                },
+            };
+        }
+        let kept_lines = self.head.len() + self.kept_mid.len() + self.ring.len();
+        let mut out = String::new();
+        let mut first = true;
+        for line in &self.head {
+            if !first {
+                out.push('\n');
+            }
+            out.push_str(line);
+            first = false;
+        }
+        for (omitted, line) in &self.kept_mid {
+            if *omitted > 0 {
                 if !first {
                     out.push('\n');
                 }
-                out.push_str(&omit_marker(omitted));
-                omitted = 0;
+                out.push_str(&omit_marker(*omitted));
                 first = false;
             }
             if !first {
@@ -165,17 +225,88 @@ fn render(lines: &[&str], kept: &[bool]) -> String {
             }
             out.push_str(line);
             first = false;
+        }
+        if self.run > 0 {
+            if !first {
+                out.push('\n');
+            }
+            out.push_str(&omit_marker(self.run));
+            first = false;
+        }
+        for (line, _) in &self.ring {
+            if !first {
+                out.push('\n');
+            }
+            out.push_str(line);
+            first = false;
+        }
+        let compressed_tokens = estimate_tokens(&out);
+        CompressResult {
+            text: out,
+            stats: CompressStats {
+                total_lines: self.total,
+                kept_lines,
+                omitted_lines: self.total - kept_lines,
+                original_tokens: self.raw_tokens,
+                compressed_tokens,
+                saved_percent: saved_pct(self.raw_tokens, compressed_tokens),
+            },
+        }
+    }
+
+    /// Process one complete line (`chunk` includes the `\n` terminator, or is
+    /// the final unterminated line).
+    fn consume(&mut self, chunk: &[u8], line: &[u8]) {
+        self.total += 1;
+        // Incremental token count. Chunks include their terminator, so counts
+        // equal whole-text cl100k counts except for rare runs of 2+ blank
+        // lines after punctuation (a regex chunk swallows several `\n`s at
+        // once); the drift is a token or two and `saved%` is approximate by
+        // contract.
+        self.raw_tokens += estimate_tokens(&String::from_utf8_lossy(chunk));
+        if self.total <= self.collapse_threshold {
+            self.prefix.extend_from_slice(chunk);
+            self.prefix_lines += 1;
+            return;
+        }
+        if !self.prefix.is_empty() {
+            let prefix = std::mem::take(&mut self.prefix);
+            let mut rest: &[u8] = &prefix;
+            let mut line_no = 0usize;
+            while let Some(pos) = rest.iter().position(|b| *b == b'\n') {
+                let mut l = &rest[..pos];
+                if l.last() == Some(&b'\r') {
+                    l = &l[..l.len() - 1];
+                }
+                line_no += 1;
+                self.feed(l, line_no);
+                rest = &rest[pos + 1..];
+            }
+            self.prefix_lines = 0;
+        }
+        self.feed(line, self.total);
+    }
+
+    /// Route one line through the keep/tail state machine. `line_no` is the
+    /// line's 1-based position in the stream.
+    fn feed(&mut self, line: &[u8], line_no: usize) {
+        let text = String::from_utf8_lossy(line);
+        let matched = self.matcher.is_match(&text);
+        if line_no <= self.head_lines {
+            self.head.push(text.into_owned());
         } else {
-            omitted += 1;
+            self.ring.push_back((text.into_owned(), matched));
+            if self.ring.len() > self.tail_lines {
+                let (l, m) = self.ring.pop_front().expect("ring not empty");
+                if m {
+                    self.kept_mid.push((self.run, l));
+                    self.run = 0;
+                } else {
+                    self.run += 1;
+                }
+            }
         }
     }
-    if omitted > 0 {
-        if !first {
-            out.push('\n');
-        }
-        out.push_str(&omit_marker(omitted));
-    }
-    out
 }
 
 fn omit_marker(n: usize) -> String {

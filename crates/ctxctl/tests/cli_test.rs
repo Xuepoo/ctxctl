@@ -884,6 +884,27 @@ fn exec_compresses_output_and_reports_savings() {
 }
 
 #[test]
+fn exec_streams_huge_output_bounded_memory() {
+    // 200k lines (~1.5 MB): the streaming compressor keeps only the
+    // head/tail windows and matches; output must render exactly like the
+    // batch compressor would.
+    let cmd = "sh -c 'seq 1 200000'";
+    let output = run(&["exec", cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = body(&output);
+    assert!(
+        text.starts_with("1\n2\n3\n4\n5\n... [199990 lines omitted]\n"),
+        "head/marker: {text:?}"
+    );
+    assert!(text.contains("199996\n199997\n199998\n199999\n200000"));
+    assert!(text.contains("Saved ~"), "savings: {text}");
+    assert!(
+        text.ends_with("tokens)\n") || text.ends_with("tokens)"),
+        "savings line last: {text}"
+    );
+}
+
+#[test]
 fn exec_custom_keep_pattern_keeps_matching_lines() {
     let cmd = printf_lines(25, "TODO: later", "");
     let bare = run(&["exec", &cmd]);

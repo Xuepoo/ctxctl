@@ -485,18 +485,19 @@ fn run_exec(
     if words.is_empty() {
         return Err(ExitError::new(1, "empty command"));
     }
-    let output = StdCommand::new(&words[0])
+    // Spawn with piped streams: stdout is compressed incrementally (bounded
+    // memory even for huge outputs) while stderr drains on a thread to avoid
+    // pipe-buffer deadlocks. The merge order stays stdout-then-stderr
+    // (cli-contract.md §4.4).
+    let mut child = StdCommand::new(&words[0])
         .args(&words[1..])
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| ExitError::new(1, format!("failed to run `{cmd}`: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut raw = stdout.to_string();
-    if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
-        raw.push('\n');
-    }
-    raw.push_str(&stderr);
+    let stdout_pipe = child.stdout.take().expect("stdout was configured as piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr was configured as piped");
 
     let mut options = ctx_exec::CompressOptions {
         keep_patterns: config.exec.keep.clone(),
@@ -512,10 +513,42 @@ fn run_exec(
         options.tail_lines = tail;
     }
 
-    let result =
-        ctx_exec::compress(&raw, &options).map_err(|e| ExitError::new(1, e.to_string()))?;
+    let stderr_handle = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr_pipe, &mut buf);
+        buf
+    });
+
+    let mut compressor =
+        ctx_exec::StreamCompressor::new(&options).map_err(|e| ExitError::new(1, e.to_string()))?;
+    let mut stdout_reader = std::io::BufReader::new(stdout_pipe);
+    let mut stdout_empty = true;
+    let mut stdout_ends_with_nl = false;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut stdout_reader, &mut buf)
+            .map_err(|e| ExitError::new(1, format!("failed to read stdout: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        stdout_empty = false;
+        stdout_ends_with_nl = buf[n - 1] == b'\n';
+        compressor.push(&buf[..n]);
+    }
+    let stderr = stderr_handle.join().unwrap_or_default();
+    if !stdout_empty && !stderr.is_empty() && !stdout_ends_with_nl {
+        compressor.push(b"\n");
+    }
+    if !stderr.is_empty() {
+        compressor.push(&stderr);
+    }
+    let result = compressor.finish();
     let stats = result.stats;
-    let code = exit_code(&output.status);
+    let code = exit_code(
+        &child
+            .wait()
+            .map_err(|e| ExitError::new(1, format!("failed to wait for `{cmd}`: {e}")))?,
+    );
 
     if format == Format::Json {
         let mut payload = json!({
