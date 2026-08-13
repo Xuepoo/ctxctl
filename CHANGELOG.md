@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Added
+
+- **`symbol --kind <k>`** — disambiguate same-name symbols (issue #6): a
+  class method vs a same-named local variable no longer resolves to whichever
+  comes first in source order. Values match the outline JSON `kind` field.
+- **`--output <path>`** — global option writing the full payload to a file,
+  bypassing stdout size limits on large `outline --json` output (issue #5).
+
 ## [0.2.1] - 2026-08-13
 
 ### Fixed
