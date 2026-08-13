@@ -28,5 +28,5 @@ jobs:
           CRATES: ${{ github.event.inputs.crates }}
         run: |
           for crate in $CRATES; do
-            cargo yank "$crate" --version "$VERSION" --message "superseded by a fixed release"
+            cargo yank "$crate" --version "$VERSION"
           done
