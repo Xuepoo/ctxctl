@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Changed
+
+- **AST-anchored compact folds (M1)** — `compact` now folds at the
+  tree-sitter body node of a definition instead of guessing from line
+  heuristics: brace bodies keep the header through the opening `{` and the
+  closing line (including trailing declarators like `} Point;`), keyword
+  bodies (python/ruby/lua) fold at the AST body start and keep their
+  `end`-style closer. Stub detection, delimiter-aware string tracking, and
+  block-comment masking keep the compact view re-parseable.
+- **Body-less data literals pass through** — a variable/const whose value
+  is a multi-line template string, JSX fragment, or array/struct literal is
+  string data, not a block; `compact` no longer scans such symbols for `{`
+  openers and leaves them unchanged (preprocessor macros still fold).
+
 ## [0.1.3] - 2026-08-13
 
 ### Fixed
