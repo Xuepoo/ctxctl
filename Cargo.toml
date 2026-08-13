@@ -26,7 +26,7 @@ tree-sitter-ruby = "0.23"
 tree-sitter-lua = "0.5"
 regex = "1"
 shell-words = "1"
-toml = "0.8"
+toml = "1.1"
 
 # rustflags shared across the workspace
 [profile.release]
