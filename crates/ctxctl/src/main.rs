@@ -202,7 +202,7 @@ fn run_outline(
     let parsed = parse_or(path, &source)?;
     let symbols = ctx_symbol::extract_symbols(&parsed);
     let file_tokens = tokens(&source);
-    let delivered_tokens: usize = symbols.iter().map(|s| s.byte_range.len() / 4).sum();
+    let delivered_tokens: usize = symbols.iter().map(|s| s.estimated_tokens()).sum();
     let saved = saved_pct(file_tokens, delivered_tokens);
     let show_doc = config.outline.show_doc && !no_doc;
 
@@ -370,7 +370,9 @@ fn run_read(
     show_saved: bool,
 ) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
-    let file_lines: Vec<&str> = source.lines().collect();
+    // Split on `\n` keeping the endings so CRLF slices stay verbatim
+    // (byte-stability plus original line-ending fidelity).
+    let file_lines: Vec<&str> = source.split_inclusive('\n').collect();
     let ranges = parse_ranges(raw).map_err(|e| ExitError::new(2, e))?;
     let ranges: Vec<(usize, usize)> = clamp_open_ends(ranges, file_lines.len());
     for (start, end) in &ranges {
@@ -386,7 +388,7 @@ fn run_read(
     }
     let slices: Vec<(usize, usize, String)> = ranges
         .iter()
-        .map(|(start, end)| (*start, *end, file_lines[start - 1..*end].join("\n")))
+        .map(|(start, end)| (*start, *end, file_lines[start - 1..*end].concat()))
         .collect();
     let delivered_tokens: usize = slices.iter().map(|(_, _, text)| tokens(text)).sum();
     let file_tokens = tokens(&source);
@@ -475,7 +477,7 @@ fn run_exec(
     let result =
         ctx_exec::compress(&raw, &options).map_err(|e| ExitError::new(1, e.to_string()))?;
     let stats = result.stats;
-    let code = output.status.code().unwrap_or(1);
+    let code = exit_code(&output.status);
 
     if format == Format::Json {
         let mut payload = json!({
@@ -594,6 +596,19 @@ fn dep_kind_name(kind: deps::DepKind) -> &'static str {
     }
 }
 
+/// Child exit code with the conventional signal encoding: 128 + signal when
+/// the child was killed by one (otherwise the code is `None` and 1 is used).
+fn exit_code(status: &std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
 fn read_source(path: &Path) -> Result<String, ExitError> {
     std::fs::read_to_string(path)
         .map_err(|e| ExitError::new(1, format!("failed to read {}: {e}", path.display())))
@@ -626,7 +641,7 @@ fn slice_lines(text: &str, range: &str) -> Result<String, String> {
     if ranges.len() > 1 {
         return Err("symbol --lines accepts a single range (e.g. 3-10)".to_string());
     }
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let (start, end) = clamp_open_ends(ranges, lines.len())[0];
     if start > lines.len() {
         return Err(format!(
@@ -634,7 +649,7 @@ fn slice_lines(text: &str, range: &str) -> Result<String, String> {
             lines.len()
         ));
     }
-    Ok(lines[start - 1..end].join("\n"))
+    Ok(lines[start - 1..end].concat())
 }
 
 /// Resolve open-ended ranges (`10-`) to an explicit end within `limit`.
@@ -695,10 +710,8 @@ fn symbol_entry(symbol: &Symbol, no_doc: bool, no_lines: bool) -> serde_json::Va
         entry["start_line"] = json!(symbol.start_line);
         entry["end_line"] = json!(symbol.end_line);
     }
-    if !no_doc {
-        if let Some(doc) = &symbol.doc_comment {
-            entry["doc_comment"] = json!(doc);
-        }
+    if !no_doc && let Some(doc) = &symbol.doc_comment {
+        entry["doc_comment"] = json!(doc);
     }
     entry
 }
@@ -758,7 +771,7 @@ fn group(n: usize) -> String {
     let bytes = digits.as_bytes();
     let mut out = String::with_capacity(digits.len() + 2);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);

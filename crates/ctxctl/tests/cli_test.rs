@@ -223,6 +223,20 @@ fn read_works_on_python_and_go() {
 }
 
 #[test]
+fn read_preserves_crlf_line_endings() {
+    let dir = tmp_dir("crlf");
+    let file = dir.join("crlf.txt");
+    std::fs::write(&file, "one\r\ntwo\r\nthree\r\n").expect("write crlf file");
+    let output = run(&["read", file.to_str().unwrap(), "--lines", "1-3"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("one\r\ntwo\r\nthree\r\n"),
+        "endings: {text:?}"
+    );
+}
+
+#[test]
 fn javascript_outline_symbol_and_deps() {
     let output = run(&["outline", "--json", JS_FIXTURE]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
@@ -855,6 +869,22 @@ fn exec_passes_through_exit_code() {
     assert_eq!(value["exit_code"], 3);
 }
 
+#[cfg(unix)]
+#[test]
+fn exec_signal_exit_code_is_128_plus_signal() {
+    // A signal-killed child must not collapse to exit code 1.
+    let output = run(&["exec", "sh -c 'kill -TERM $$'"]);
+    assert_eq!(
+        output.status.code(),
+        Some(143),
+        "stderr: {}",
+        stderr(&output)
+    );
+    let json_output = run(&["exec", "--json", "sh -c 'kill -TERM $$'"]);
+    let value: Value = serde_json::from_str(&stdout(&json_output)).expect("valid json");
+    assert_eq!(value["exit_code"], 143);
+}
+
 #[test]
 fn exec_invalid_keep_pattern_fails() {
     let output = run(&["exec", "--keep", "[", "true"]);
@@ -1113,6 +1143,23 @@ fn xdg_config_new_keys_parse() {
     assert!(
         stdout(&output).contains("... [2 symbols omitted]"),
         "fold_threshold from XDG config not applied"
+    );
+}
+
+#[test]
+fn unknown_config_key_is_an_error() {
+    let root = tmp_dir("xdg-unknown-key");
+    let xdg = root.join("ctxctl");
+    std::fs::create_dir_all(&xdg).expect("create xdg dir");
+    std::fs::write(xdg.join("config.toml"), "[exec]\nhead_line = 3\n").expect("write xdg config");
+    let mut cmd = Command::new(BIN);
+    cmd.env("XDG_CONFIG_HOME", &root).args(["outline", FIXTURE]);
+    let output = cmd.output().expect("run ctxctl");
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("head_line"),
+        "error must name the unknown key: {}",
+        stderr(&output)
     );
 }
 

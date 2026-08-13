@@ -79,9 +79,10 @@ impl Default for Config {
 }
 
 /// Partial view of a config file: only fields explicitly declared are set.
-/// Used to implement key-wise merge semantics.
+/// Used to implement key-wise merge semantics. Unknown keys are errors —
+/// a typo'd key must not be silently dropped.
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct Partial {
     exec: PartialExec,
     outline: PartialOutline,
@@ -90,7 +91,7 @@ struct Partial {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct PartialExec {
     keep: Option<Vec<String>>,
     head_lines: Option<usize>,
@@ -99,20 +100,20 @@ struct PartialExec {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct PartialOutline {
     fold_threshold: Option<usize>,
     show_doc: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct PartialPaths {
     ignore: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct PartialGeneral {
     show_saved: Option<bool>,
 }
@@ -150,10 +151,10 @@ impl Partial {
 pub fn load(explicit: Option<&Path>) -> Result<Config, String> {
     let mut config = Config::default();
 
-    if let Some(global) = xdg_global_path() {
-        if global.is_file() {
-            merge_file(&mut config, &global)?;
-        }
+    if let Some(global) = xdg_global_path()
+        && global.is_file()
+    {
+        merge_file(&mut config, &global)?;
     }
     if let Some(project) =
         discover_project_config(&std::env::current_dir().map_err(|e| e.to_string())?)
@@ -178,10 +179,9 @@ fn merge_file(config: &mut Config, path: &Path) -> Result<(), String> {
 
 fn xdg_global_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(xdg).join("ctxctl/config.toml");
-        if path.is_file() {
-            return Some(path);
-        }
+        // An explicitly set XDG_CONFIG_HOME is authoritative; do not fall
+        // back to ~/.config (XDG spec).
+        return Some(PathBuf::from(xdg).join("ctxctl/config.toml"));
     }
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/ctxctl/config.toml"))
 }

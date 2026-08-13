@@ -71,14 +71,20 @@ fn classify(
         }
         // Relative imports resolve against the file's directory; python
         // leading-dot modules (`from .x import y`) resolve against the
-        // package directory. Keep `./`/`../` intact for Path::join; only
-        // python's bare leading dots are stripped.
-        let rel = if imp.target.starts_with("./") || imp.target.starts_with("../") {
-            &imp.target[..]
+        // package directory — n leading dots means n-1 levels up. Keep
+        // `./`/`../` intact for Path::join.
+        let joined = if imp.target.starts_with("./") || imp.target.starts_with("../") {
+            file_dir.join(&imp.target[..])
+        } else if imp.target.starts_with('.') {
+            let dots = imp.target.bytes().take_while(|b| *b == b'.').count();
+            let mut up = std::path::PathBuf::new();
+            for _ in 1..dots {
+                up.push("..");
+            }
+            file_dir.join(up).join(&imp.target[dots..])
         } else {
-            imp.target.trim_start_matches('.')
+            file_dir.join(&imp.target[..])
         };
-        let joined = file_dir.join(rel);
         // Slash-containing ignore patterns match relative paths, so strip a
         // cwd prefix when present (deterministic per invocation).
         let probe = relative_to_cwd(&joined);
@@ -94,12 +100,11 @@ fn classify(
     if is_ignored(&imp.target, ignore) {
         return DepKind::Ignored;
     }
-    if language == "rust" {
-        if let Some(first) = imp.target.split("::").next() {
-            if local_mods.contains(first) {
-                return DepKind::Local;
-            }
-        }
+    if language == "rust"
+        && let Some(first) = imp.target.split("::").next()
+        && local_mods.contains(first)
+    {
+        return DepKind::Local;
     }
     if matches!(language, "python" | "go" | "java" | "csharp") {
         for candidate in existence_candidates(language, &imp.target) {
@@ -182,18 +187,26 @@ fn normalize(path: &str) -> String {
 }
 
 /// Minimal glob match supporting `*` (any run, crosses segments) and `?`
-/// (single char). Deterministic; no regex engine involved.
+/// (single char). Deterministic; no regex engine involved. Memoized on
+/// (pattern_len, text_len) so adversarial patterns (`*a*a*…*b`) stay
+/// polynomial instead of exponential.
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
-    fn go(p: &[char], t: &[char]) -> bool {
-        match (p.first(), t.first()) {
-            (None, None) => true,
-            (Some('*'), _) => go(&p[1..], t) || (!t.is_empty() && go(p, &t[1..])),
-            (Some('?'), Some(_)) => go(&p[1..], &t[1..]),
-            (Some(a), Some(b)) if a == b => go(&p[1..], &t[1..]),
-            _ => false,
+    let mut memo = vec![vec![None; t.len() + 1]; p.len() + 1];
+    fn go(p: &[char], t: &[char], memo: &mut [Vec<Option<bool>>]) -> bool {
+        if let Some(v) = memo[p.len()][t.len()] {
+            return v;
         }
+        let res = match (p.first(), t.first()) {
+            (None, None) => true,
+            (Some('*'), _) => go(&p[1..], t, memo) || (!t.is_empty() && go(p, &t[1..], memo)),
+            (Some('?'), Some(_)) => go(&p[1..], &t[1..], memo),
+            (Some(a), Some(b)) if a == b => go(&p[1..], &t[1..], memo),
+            _ => false,
+        };
+        memo[p.len()][t.len()] = Some(res);
+        res
     }
-    go(&p, &t)
+    go(&p, &t, &mut memo)
 }
