@@ -37,6 +37,8 @@ Saved ~70% (1,240 -> 372 tokens)
 
 No whole-file dumps. No raw log walls. Deterministic output — identical runs stay cache-hot.
 
+English | [简体中文](README.zh-CN.md)
+
 ## Installation
 
 ### Cargo (recommended)
@@ -56,26 +58,6 @@ bun add -g ctxctl
 ### GitHub Releases
 
 Download the prebuilt binary for your platform from the [releases page](https://github.com/Xuepoo/ctxctl-cli/releases) (also ships `.deb`, `.rpm`, `.apk`, and Arch packages).
-
-### Homebrew
-
-```bash
-brew tap Xuepoo/tap https://github.com/Xuepoo/homebrew-tap.git
-brew install ctxctl
-```
-
-### Scoop (Windows)
-
-```powershell
-scoop bucket add Xuepoo https://github.com/Xuepoo/scoop-bucket.git
-scoop install ctxctl
-```
-
-### Docker
-
-```bash
-docker run --rm <dockerhub-username>/ctxctl outline path/to/file.rs
-```
 
 ## Quick start
 
@@ -128,7 +110,7 @@ Rust edition 2024 workspace: `ctx-symbol` (symbol engine), `ctx-exec` (output co
 
 ```bash
 just check      # fmt + clippy + check + test
-cargo test      # 121 tests
+cargo test      # 128 tests
 ```
 
 ## License
