@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [0.1.3] - 2026-08-13
+
+### Fixed
+
+- **Deterministic local test runs** — `tmp_dir()` now clears stale
+  fixtures from a previous run; re-running the suite on the same machine
+  no longer fails with `File exists` on the symlinked-config test.
+- **Fully idempotent release pipeline** — GitHub Release creation skips
+  when the tag release exists, and the npm root verify polls the registry
+  until the fresh version is visible before installing.
+
 ## [0.1.2] - 2026-08-13
 
 ### Fixed
