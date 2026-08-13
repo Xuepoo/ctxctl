@@ -57,7 +57,7 @@ bun add -g ctxctl
 
 ### GitHub Releases
 
-从 [releases 页面](https://github.com/Xuepoo/ctxctl-cli/releases) 下载对应平台的预编译二进制（同时提供 `.deb`、`.rpm`、`.apk` 和 Arch 包）。
+从 [releases 页面](https://github.com/Xuepoo/ctxctl/releases) 下载对应平台的预编译二进制（同时提供 `.deb`、`.rpm`、`.apk` 和 Arch 包）。
 
 ## 快速上手
 
@@ -93,8 +93,13 @@ npx skills add Xuepoo/ctxctl-skills --list
 # 为所有已检测到的代理安装核心 skill
 npx skills add Xuepoo/ctxctl-skills --all
 
-# 或只为某个代理安装
-npx skills add Xuepoo/ctxctl-skills --skill ctxctl-core --agent claude-code
+# 或为指定 agent 安装
+npx skills add Xuepoo/ctxctl-skills \
+  --skill ctxctl-core \
+  --agent codex \
+  --agent claude-code \
+  --agent cursor \
+  --agent github-copilot
 ```
 
 临时使用（不安装）：

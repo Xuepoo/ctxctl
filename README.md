@@ -57,7 +57,7 @@ bun add -g ctxctl
 
 ### GitHub Releases
 
-Download the prebuilt binary for your platform from the [releases page](https://github.com/Xuepoo/ctxctl-cli/releases) (also ships `.deb`, `.rpm`, `.apk`, and Arch packages).
+Download the prebuilt binary for your platform from the [releases page](https://github.com/Xuepoo/ctxctl/releases) (also ships `.deb`, `.rpm`, `.apk`, and Arch packages).
 
 ## Quick start
 
@@ -93,8 +93,13 @@ npx skills add Xuepoo/ctxctl-skills --list
 # Install the core skill for all detected agents
 npx skills add Xuepoo/ctxctl-skills --all
 
-# Or install for a specific agent
-npx skills add Xuepoo/ctxctl-skills --skill ctxctl-core --agent claude-code
+# Or install for specific agents
+npx skills add Xuepoo/ctxctl-skills \
+  --skill ctxctl-core \
+  --agent codex \
+  --agent claude-code \
+  --agent cursor \
+  --agent github-copilot
 ```
 
 Use the skill once without installing it:

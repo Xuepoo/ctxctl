@@ -7,7 +7,7 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT"
 authors = ["fuyu"]
-repository = "https://github.com/Xuepoo/ctxctl-cli"
+repository = "https://github.com/Xuepoo/ctxctl"
 homepage = "https://ctxctl.xuepoo.xyz"
 
 [workspace.dependencies]
