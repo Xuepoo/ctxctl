@@ -354,8 +354,17 @@ fn fold_at_body_node(
     if body_start <= sym_start || body_end > sym_end || body_start >= body_end {
         return None;
     }
-    let body_first_line = source[body_start..body_end].lines().next().unwrap_or("");
-    let brace_body = body_first_line.trim_start().starts_with('{');
+    // A `{` body only exists in brace languages; indentation/keyword bodies
+    // (python, ruby, lua) may still have a `{` as the first statement
+    // (a dict/table literal).
+    let brace_body = parsed.language.keeps_brace_closers()
+        && (source[body_start..].starts_with('{')
+            || source[body_start..body_end]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('{'));
 
     if brace_body {
         // Header = up to and including the `{` line; the closer is the `}`
@@ -367,6 +376,16 @@ fn fold_at_body_node(
         let header = &source[sym_start..opener_nl];
         if header.matches("/*").count() > header.matches("*/").count() {
             return None; // open block comment swallows the fold marker
+        }
+        // The opener line must not carry code after the `{` — folding right
+        // after it would cut a statement in half (`{ return very_long(...`)
+        let after_open = &source[body_start + 1..opener_nl];
+        let after_open_t = after_open.trim();
+        let comment_only = after_open_t.is_empty()
+            || after_open_t.starts_with("//")
+            || (after_open_t.starts_with("/*") && after_open_t.ends_with("*/"));
+        if !comment_only {
+            return None;
         }
         let last_byte = body_end.saturating_sub(1);
         let closer_line_start = source[..last_byte]
@@ -585,10 +604,9 @@ fn boundary_continues(
     if prev_open_parens > 0 {
         return true;
     }
-    if next
-        .trim_start()
-        .starts_with(['+', '-', '/', '=', '.', ':', '&', '|', '?', '<', ';'])
-    {
+    if next.trim_start().starts_with([
+        '+', '-', '/', '=', '.', ':', '&', '|', '?', '<', ';', '"', '\'',
+    ]) {
         return true;
     }
     // A lone token at the end of the line (`__extension__`, `type`,

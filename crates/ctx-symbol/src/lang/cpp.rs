@@ -27,6 +27,7 @@ impl Language for CppLang {
         &[
             "compound_statement",
             "field_declaration_list",
+            "declaration_list",
             "initializer_list",
             "enumerator_list",
         ]
