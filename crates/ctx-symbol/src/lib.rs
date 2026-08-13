@@ -126,11 +126,11 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     let ast_fold_at = sym_node
         .and_then(|node| parsed.language.body_start_line(parsed, &node))
         .map(|body_line| body_line.saturating_sub(range_start_line));
-    let base_indent = leading_whitespace(lines[0]);
-    // Header = the signature: lines up to (and including) the first block
-    // opener (`{` / `:` / ruby keywords); the fold begins at the next body
-    // line. Lines with no opener (e.g. a lone decorator) extend the header.
-    // Pure comment lines never count as openers (`// {` is prose).
+    // Header = the signature. Without an AST body anchor the only foldable
+    // body-less definition is a preprocessor macro (handled below): a
+    // variable/const declaration whose value is a literal or expression
+    // (template string, JSX, array/struct literal) is data, and scanning it
+    // for a `{` opener would mangle that data. Such symbols pass through.
     let mut fold_at = lines.len();
     let mut last_opener: Option<usize> = None;
     if let Some(idx) = ast_fold_at {
@@ -141,26 +141,12 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         // out the continuation.
         fold_at = idx.clamp(1, lines.len());
         last_opener = Some(fold_at.saturating_sub(1));
-    } else {
-        let mut seen_opener = false;
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 && seen_opener && indented_more(line, base_indent) {
-                fold_at = i;
-                break;
-            }
-            if has_code(line, line_starts[i] + sym_start, &comments)
-                && parsed.language.is_opener_line(line)
-            {
-                seen_opener = true;
-                last_opener = Some(i);
-            }
-        }
     }
     if fold_at == lines.len() {
-        // No deeper-indented body line followed an opener: fold right after
-        // the last opener. With no opener at all, only preprocessor macros
-        // (which splice their body via `\`) are foldable — anything else is a
-        // forward declaration or other body-less definition: pass through.
+        // With no AST anchor and no opener, only preprocessor macros (which
+        // splice their body via `\`) are foldable — anything else is a
+        // forward declaration, data literal, or other body-less definition:
+        // pass through unchanged.
         fold_at = match last_opener {
             Some(i) => i + 1,
             // A macro folds after its first line only when the name lives on
@@ -589,11 +575,6 @@ fn code_chars(line: &str, abs_start: usize, comments: &[Range<usize>]) -> Vec<ch
     out
 }
 
-/// True if the line carries any non-comment content.
-fn has_code(line: &str, abs_start: usize, comments: &[Range<usize>]) -> bool {
-    !code_chars(line, abs_start, comments).is_empty()
-}
-
 /// True if the line is a block closer: it starts with `}`, `]`, `)`
 /// (optionally followed by more tokens, as in `} Point;` typedef closes), or
 /// is an `end` keyword line (ruby/lua).
@@ -697,11 +678,6 @@ fn closer_balances(closer: &str, header: &[&str]) -> bool {
         }
     }
     o > c
-}
-
-/// True if the line is indented deeper than the reference prefix.
-fn indented_more(line: &str, base: &str) -> bool {
-    leading_whitespace(line).len() > base.len()
 }
 
 /// Leading spaces/tabs of a line (byte-safe for ASCII whitespace).

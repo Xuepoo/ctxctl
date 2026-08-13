@@ -315,6 +315,10 @@ fn js_path() -> &'static Path {
     Path::new("sample.js")
 }
 
+fn jsx_path() -> &'static Path {
+    Path::new("sample.jsx")
+}
+
 fn java_path() -> &'static Path {
     Path::new("Sample.java")
 }
@@ -843,6 +847,83 @@ line two`);
     assert!(
         compact.contains("line two"),
         "template must not fold: {compact}"
+    );
+}
+
+#[test]
+fn compact_const_template_literal_passes_through() {
+    // A multi-line template literal assigned to a const is string data; its
+    // `${…}` interpolation braces are not block openers. The symbol must not
+    // fold (a marker inside the string would corrupt the value).
+    let src = r#"
+const source = `\
+const {${items.join(', ')}} = deck;
+${
+  loaders.length
+    ? `\
+const {${loaders.join(', ')}} = loaders;
+`
+    : ''
+}
+new DeckGL({ layers: [layer] });
+`;
+"#;
+    let parsed = ctx_symbol::parse(js_path(), src).unwrap();
+    let sym = &ctx_symbol::extract_symbols(&parsed)[0];
+    let compact = ctx_symbol::compact_symbol(&parsed, sym);
+    let re = ctx_symbol::parse(js_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact}");
+    assert!(
+        compact.contains("new DeckGL"),
+        "template literal must not fold: {compact}"
+    );
+    assert!(compact.trim_end().ends_with("`;"), "closer kept: {compact}");
+}
+
+#[test]
+fn compact_jsx_fragment_passes_through() {
+    // A JSX fragment assigned to a const has `{}` expression containers, not
+    // statement blocks. It must pass through unchanged.
+    let src = r#"
+const X = (<>
+  {
+    value
+  }
+</>);
+"#;
+    let parsed = ctx_symbol::parse(jsx_path(), src).unwrap();
+    let sym = &ctx_symbol::extract_symbols(&parsed)[0];
+    let compact = ctx_symbol::compact_symbol(&parsed, sym);
+    let re = ctx_symbol::parse(jsx_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact}");
+    assert!(
+        compact.contains("</>"),
+        "jsx fragment must not fold: {compact}"
+    );
+}
+
+#[test]
+fn compact_rust_const_array_literal_passes_through() {
+    // A const with a large array/struct literal is data; its struct-literal
+    // braces are not block openers. It must pass through unchanged.
+    let src = r#"
+const TYPED: &[Def] = &[
+    Def {
+        name: "a",
+        props: &[
+            Method { x: 1 },
+        ],
+    },
+];
+"#;
+    let parsed = ctx_symbol::parse(rust_path(), src).unwrap();
+    let sym = &ctx_symbol::extract_symbols(&parsed)[0];
+    let compact = ctx_symbol::compact_symbol(&parsed, sym);
+    let re = ctx_symbol::parse(rust_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact}");
+    assert!(
+        compact.contains("props"),
+        "array literal must not fold: {compact}"
     );
 }
 
