@@ -10,10 +10,11 @@ fn opts() -> CompressOptions {
 }
 
 fn lines(n: usize, label: &str) -> String {
-    (1..=n)
-        .map(|i| format!("{label}{i}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = Vec::with_capacity(n);
+    for i in 1..=n {
+        out.push(format!("{label}{i}"));
+    }
+    out.join("\n")
 }
 
 #[test]
