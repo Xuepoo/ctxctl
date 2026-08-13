@@ -83,10 +83,15 @@ pub struct CompressResult {
     pub stats: CompressStats,
 }
 
-/// Token approximation of a text's cost: 4 bytes ~ 1 token, matching the
-/// estimate used by `ctx-symbol`.
+/// Real token count via the cl100k_base BPE tokenizer (GPT-4-class; see
+/// cli-contract.md §8). A deterministic function of the text, so byte
+/// stability is unaffected. The bundled encoding is parsed once and cached.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4
+    static BPE: std::sync::OnceLock<tiktoken_rs::CoreBPE> = std::sync::OnceLock::new();
+    let bpe = BPE.get_or_init(|| {
+        tiktoken_rs::cl100k_base().expect("bundled cl100k_base encoding is corrupt")
+    });
+    bpe.encode_with_special_tokens(text).len()
 }
 
 /// Compress command output.

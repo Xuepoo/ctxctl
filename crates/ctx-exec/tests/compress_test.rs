@@ -168,9 +168,18 @@ fn single_line_output_is_kept_as_is() {
 }
 
 #[test]
-fn estimate_tokens_is_bytes_over_four() {
-    assert_eq!(estimate_tokens("abcdefgh"), 2);
-    assert_eq!(estimate_tokens("abc"), 0);
+fn estimate_tokens_uses_cl100k_bpe() {
+    // Known cl100k_base counts (verified against tiktoken-rs 0.12).
+    assert_eq!(estimate_tokens(""), 0);
+    assert_eq!(estimate_tokens("a"), 1);
+    assert_eq!(estimate_tokens("€"), 1);
+    assert_eq!(estimate_tokens("hello world"), 2);
+    assert_eq!(estimate_tokens("abcdefgh"), 1);
+    assert_eq!(estimate_tokens("你好"), 2);
+    assert_eq!(
+        estimate_tokens("这是一个中文句子，用来测试 token 计数。"),
+        17
+    );
 }
 
 #[test]

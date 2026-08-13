@@ -11,3 +11,4 @@ description = "Token-efficient command output compression via rg-rule-driven fil
 regex.workspace = true
 serde.workspace = true
 thiserror = "2"
+tiktoken-rs.workspace = true

@@ -142,6 +142,26 @@ fn outline_saved_reflects_actual_output_size() {
 }
 
 #[test]
+fn token_accounting_uses_cl100k_bpe() {
+    // Pin the real cl100k_base count for a CJK-heavy fixture: 57 tokens
+    // (bytes/4 would report 44). Contract: cli-contract.md §8.
+    let dir = tmp_dir("token-bpe");
+    let path = dir.join("cjk.rs");
+    let src = "// 中文注释：这是一个用于测试真实 token 计数的文件。\n\
+               // 英文注释 here.\n\
+               pub fn hello() -> i32 {\n\
+                   let greeting = \"你好，世界\";\n\
+                   greeting.len() as i32\n\
+               }\n";
+    std::fs::write(&path, src).expect("write fixture");
+    let output = run(&["outline", "--json", path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert_eq!(value["saved"]["tokens_before"].as_u64().unwrap(), 57);
+    assert!(value["saved"]["percent"].as_u64().unwrap() <= 100);
+}
+
+#[test]
 fn outline_format_json_is_alias_of_json_flag() {
     let a = stdout(&run(&["outline", "--json", FIXTURE]));
     let b = stdout(&run(&["outline", "--format", "json", FIXTURE]));

@@ -42,7 +42,9 @@ pub struct Symbol {
 }
 
 impl Symbol {
-    /// Token-approximation of this symbol's cost (4 chars ~ 1 token).
+    /// Cheap approximation of this symbol's cost (4 bytes ~ 1 token). The
+    /// ctxctl CLI and `ctx-exec` report real cl100k_base BPE counts; this
+    /// stays dependency-free because it only sees byte offsets, not source.
     pub fn estimated_tokens(&self) -> usize {
         self.byte_range.len() / 4
     }

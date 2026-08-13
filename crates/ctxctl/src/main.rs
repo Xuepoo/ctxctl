@@ -568,7 +568,7 @@ fn run_deps(
         &config.paths.ignore,
     );
     let file_tokens = tokens(&source);
-    let delivered_tokens: usize = resolved.iter().map(|r| r.bytes / 4).sum();
+    let delivered_tokens: usize = resolved.iter().map(|r| tokens(&r.target)).sum();
     let saved = saved_pct(file_tokens, delivered_tokens);
 
     if format == Format::Json {
@@ -786,9 +786,15 @@ fn kind_alias(kind: SymbolKind) -> &'static str {
     }
 }
 
-/// Token approximation: 4 bytes ~ 1 token (cli-contract.md §8).
+/// Real token count via the cl100k_base BPE tokenizer (cli-contract.md §8).
+/// Deterministic, so byte stability is unaffected; the bundled encoding is
+/// parsed once and cached.
 fn tokens(text: &str) -> usize {
-    text.len() / 4
+    static BPE: std::sync::OnceLock<tiktoken_rs::CoreBPE> = std::sync::OnceLock::new();
+    let bpe = BPE.get_or_init(|| {
+        tiktoken_rs::cl100k_base().expect("bundled cl100k_base encoding is corrupt")
+    });
+    bpe.encode_with_special_tokens(text).len()
 }
 
 fn saved_pct(before: usize, after: usize) -> u32 {
