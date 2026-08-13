@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
-## [Unreleased]
+## [0.2.2] - 2026-08-14
 
 ### Added
 
@@ -13,6 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   comes first in source order. Values match the outline JSON `kind` field.
 - **`--output <path>`** — global option writing the full payload to a file,
   bypassing stdout size limits on large `outline --json` output (issue #5).
+
+### Changed
+
+- **Preprocessor-aware C/C++ header parsing (M2)** — `.h` files carrying
+  C++-only markers (`::`, `template`, `namespace`, …) now route to the cpp
+  grammar; annotation macros (SAL tokens, decl-style invocations, ALL-CAPS
+  specifiers) are masked when they confuse the parser. C/C++ headers that
+  used to exit 3 now outline cleanly (system corpus clean slices +26%).
 
 ## [0.2.1] - 2026-08-13
 
