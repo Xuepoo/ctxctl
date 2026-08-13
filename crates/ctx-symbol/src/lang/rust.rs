@@ -69,37 +69,31 @@ impl Language for RustLang {
         source: &str,
     ) -> Vec<crate::imports::ImportTarget> {
         (|| {
-            let target = match node.kind() {
+            match node.kind() {
                 "use_declaration" => {
                     // `use` -> argument: use_tree. The `path` field only holds
-                    // the first segment, so derive the full target from the
-                    // text and trim aliases / groups / globs:
-                    // `use a::b as c;`, `use a::{b, c};`, `use a::b::*;`.
+                    // the first segment, so derive the full target(s) from the
+                    // text: `use a::b as c;`, `use a::{b, c};`, `use a::b::*;`
+                    // — group items expand to one target each.
                     let tree = node.child_by_field_name("argument")?;
-                    let mut target = tree.utf8_text(source.as_bytes()).ok()?.trim().to_string();
-                    if let Some(idx) = target.find(" as ") {
-                        target.truncate(idx);
+                    let text = tree.utf8_text(source.as_bytes()).ok()?.trim();
+                    let mut out = Vec::new();
+                    expand_use_target(text, &mut out);
+                    if out.is_empty() {
+                        return None;
                     }
-                    if let Some(idx) = target.find("::{") {
-                        target.truncate(idx);
-                    } else if let Some(idx) = target.find("::*") {
-                        target.truncate(idx);
-                    }
-                    // Pathless group: `use {a::x, b::y};` -> first item.
-                    if target.starts_with('{') {
-                        target = target
-                            .strip_prefix('{')
-                            .and_then(|rest| rest.split(',').next())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                    }
-                    let relative = target == "crate"
-                        || target == "super"
-                        || target.starts_with("crate::")
-                        || target.starts_with("super::")
-                        || target.starts_with("self::");
-                    crate::imports::ImportTarget { target, relative }
+                    let targets = out
+                        .into_iter()
+                        .map(|target| {
+                            let relative = target == "crate"
+                                || target == "super"
+                                || target.starts_with("crate::")
+                                || target.starts_with("super::")
+                                || target.starts_with("self::");
+                            crate::imports::ImportTarget { target, relative }
+                        })
+                        .collect();
+                    Some(targets)
                 }
                 // `mod foo;` declares a same-crate file module; inline modules
                 // (with a body) are not file dependencies.
@@ -109,23 +103,75 @@ impl Language for RustLang {
                     }
                     let name = node.child_by_field_name("name")?;
                     let target = name.utf8_text(source.as_bytes()).ok()?.trim().to_string();
-                    crate::imports::ImportTarget {
+                    Some(vec![crate::imports::ImportTarget {
                         target,
                         relative: true,
-                    }
+                    }])
                 }
                 "extern_crate_declaration" => {
                     let name = node.child_by_field_name("name")?;
                     let target = name.utf8_text(source.as_bytes()).ok()?.trim().to_string();
-                    crate::imports::ImportTarget {
+                    Some(vec![crate::imports::ImportTarget {
                         target,
                         relative: false,
-                    }
+                    }])
                 }
-                _ => return None,
-            };
-            Some(vec![target])
+                _ => None,
+            }
         })()
         .unwrap_or_default()
     }
+}
+
+/// Expand a `use` target into one entry per concrete path: `a::{b, c}` ->
+/// `a::b`, `a::c`; `{a::x, b::y}` -> both; `a::b as c` drops the alias;
+/// `a::b::*` drops the glob. Nested groups expand recursively.
+fn expand_use_target(text: &str, out: &mut Vec<String>) {
+    if let Some(idx) = text.find(" as ") {
+        expand_use_target(text[..idx].trim(), out);
+        return;
+    }
+    if let Some(idx) = text.find("::{") {
+        let prefix = &text[..idx];
+        let inner = text[idx + 3..].trim().trim_end_matches(';');
+        let inner = inner.strip_suffix('}').unwrap_or(inner);
+        for item in split_top_level(inner, '{', '}') {
+            expand_use_target(&format!("{prefix}::{item}"), out);
+        }
+        return;
+    }
+    if let Some(rest) = text.trim().strip_prefix('{') {
+        let inner = rest.strip_suffix('}').unwrap_or(rest);
+        for item in split_top_level(inner, '{', '}') {
+            expand_use_target(item.trim(), out);
+        }
+        return;
+    }
+    let target = text.trim().trim_end_matches("::*").trim();
+    if !target.is_empty() {
+        out.push(target.to_string());
+    }
+}
+
+/// Split on top-level commas (commas outside nested braces).
+fn split_top_level(text: &str, open: char, close: char) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut out = Vec::new();
+    for (i, ch) in text.char_indices() {
+        match ch {
+            c if c == open => depth += 1,
+            c if c == close => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(text[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = text[start..].trim();
+    if !last.is_empty() {
+        out.push(last);
+    }
+    out
 }

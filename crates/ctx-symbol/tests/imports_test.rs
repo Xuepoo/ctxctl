@@ -117,7 +117,8 @@ fn rust_extracts_use_mod_and_extern_crate() {
         vec![
             ("serde::Deserialize".to_string(), false, 2),
             ("crate::lib::helper".to_string(), true, 3),
-            ("std::collections".to_string(), false, 4),
+            ("std::collections::HashMap".to_string(), false, 4),
+            ("std::collections::HashSet".to_string(), false, 4),
             ("super::util".to_string(), true, 5),
             ("frontend".to_string(), true, 7),
             ("log".to_string(), false, 12),
