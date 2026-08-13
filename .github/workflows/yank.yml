@@ -1,0 +1,32 @@
+name: Yank crates.io versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to yank (e.g. 0.1.1)"
+        required: true
+        default: "0.1.1"
+      crates:
+        description: "Space-separated crate names (default: ctx-symbol ctx-exec)"
+        required: false
+        default: "ctx-symbol ctx-exec"
+
+permissions:
+  contents: read
+
+jobs:
+  yank:
+    name: Yank ${{ github.event.inputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Yank versions
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+          CRATES: ${{ github.event.inputs.crates }}
+        run: |
+          for crate in $CRATES; do
+            cargo yank "$crate" --version "$VERSION" --message "superseded by a fixed release"
+          done
