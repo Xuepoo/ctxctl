@@ -303,6 +303,10 @@ fn ts_path() -> &'static Path {
     Path::new("sample.ts")
 }
 
+fn tsx_path() -> &'static Path {
+    Path::new("sample.tsx")
+}
+
 fn py_path() -> &'static Path {
     Path::new("sample.py")
 }
@@ -925,6 +929,33 @@ const TYPED: &[Def] = &[
         compact.contains("props"),
         "array literal must not fold: {compact}"
     );
+}
+
+#[test]
+fn tsx_uses_the_tsx_grammar() {
+    // JSX-in-TypeScript must parse with the TSX grammar; the plain
+    // typescript grammar errors on JSX elements (`.tsx` files).
+    let src = r#"
+import React from "react";
+
+type Props = { name: string };
+
+export function Greeting({ name }: Props) {
+  return <div className="greeting">Hello, {name}</div>;
+}
+
+export const App = () => <><Greeting name="x" /></>;
+"#;
+    let parsed = ctx_symbol::parse(tsx_path(), src).unwrap();
+    assert_eq!(
+        ctx_symbol::parse_error_count(&parsed),
+        0,
+        "tsx must parse cleanly"
+    );
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"Greeting"), "missing component: {names:?}");
+    assert!(names.contains(&"App"), "missing component: {names:?}");
 }
 
 #[test]

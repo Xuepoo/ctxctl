@@ -15,6 +15,16 @@ impl Language for TypeScriptLang {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
 
+    fn grammar_for_path(&self, path: &Path) -> tree_sitter::Language {
+        // `.tsx` is JSX-in-TypeScript and needs the TSX grammar; the plain
+        // typescript grammar errors on JSX. `.mts`/`.cts` stay typescript.
+        if path.extension().and_then(|e| e.to_str()) == Some("tsx") {
+            tree_sitter_typescript::LANGUAGE_TSX.into()
+        } else {
+            self.grammar()
+        }
+    }
+
     fn supports_path(&self, path: &Path) -> bool {
         matches!(
             path.extension().and_then(|e| e.to_str()),
@@ -43,7 +53,12 @@ impl Language for TypeScriptLang {
     fn symbol_name(&self, node: &tree_sitter::Node, source: &str) -> Option<String> {
         // The `name` grammar field is precise for function/class/interface/
         // enum/type declarations; method_definition also exposes `name`.
-        let name_node = node.child_by_field_name("name")?;
+        // `const`/`let` lexical declarations carry the name on their
+        // `variable_declarator` child instead — read it there.
+        let name_node = match node.child_by_field_name("name") {
+            Some(n) => n,
+            None => node.named_child(0)?.child_by_field_name("name")?,
+        };
         name_node
             .utf8_text(source.as_bytes())
             .ok()

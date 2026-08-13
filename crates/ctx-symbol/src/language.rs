@@ -35,6 +35,13 @@ pub trait Language: Send + Sync {
     /// The tree-sitter grammar for this language.
     fn grammar(&self) -> tree_sitter::Language;
 
+    /// The tree-sitter grammar for a specific path. Defaults to
+    /// [`Self::grammar`]; backends with per-extension grammars (e.g.
+    /// TypeScript's TSX grammar for `.tsx`) override this.
+    fn grammar_for_path(&self, _path: &Path) -> tree_sitter::Language {
+        self.grammar()
+    }
+
     /// Return true if this backend handles the given file path.
     fn supports_path(&self, path: &Path) -> bool;
 
@@ -136,7 +143,7 @@ pub fn parse(path: &Path, source: &str) -> Result<ParsedSource, SymbolError> {
         .ok_or_else(|| SymbolError::UnsupportedLanguage(path.display().to_string()))?;
     let mut parser = tree_sitter::Parser::new();
     parser
-        .set_language(&lang.grammar())
+        .set_language(&lang.grammar_for_path(path))
         .map_err(|e| SymbolError::Parse(e.to_string()))?;
     let tree = parser
         .parse(source, None)
