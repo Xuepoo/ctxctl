@@ -12,6 +12,7 @@
 
 mod config;
 mod deps;
+mod mcp;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
@@ -167,6 +168,10 @@ enum Command {
         #[arg(long)]
         tail: Option<usize>,
     },
+    /// Serve outline/symbol/read/deps/exec as MCP tools over stdio
+    /// (newline-delimited JSON-RPC 2.0). Optional adapter; the CLI remains
+    /// the canonical interface.
+    Mcp,
 }
 
 /// An error carrying the exit code required by the CLI contract (§5).
@@ -210,25 +215,33 @@ fn main() -> ExitCode {
 }
 
 /// Shared output routing: format, metrics toggle, and the `--output` target.
+/// `collect` captures payloads in memory instead of stdout/file — used by
+/// the `mcp` server, which returns them as tool results.
 struct OutputCtx<'a> {
     format: Format,
     show_saved: bool,
     output: Option<&'a Path>,
+    collect: Option<&'a mut String>,
+    /// Set by `run_exec`: the child's exit code, so embedders (the MCP
+    /// server) can surface failure without parsing rendered output.
+    captured_exit: Option<u8>,
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
     let config = config::load(cli.config.as_deref()).map_err(|e| ExitError::new(1, e))?;
-    let ctx = OutputCtx {
+    let mut ctx = OutputCtx {
         format: if cli.json { Format::Json } else { cli.format },
         show_saved: config.general.show_saved && !cli.no_saved,
         output: cli.output.as_deref(),
+        collect: None,
+        captured_exit: None,
     };
     match &cli.command {
         Command::Outline {
             file,
             no_doc,
             no_lines,
-        } => run_outline(file, *no_doc, *no_lines, &ctx, &config),
+        } => run_outline(file, *no_doc, *no_lines, &mut ctx, &config),
         Command::Symbol {
             file,
             name,
@@ -243,24 +256,30 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
             *signature,
             *compact,
             lines.as_deref(),
-            &ctx,
+            &mut ctx,
         ),
-        Command::Read { file, lines } => run_read(file, lines, &ctx),
-        Command::Deps { file } => run_deps(file, &ctx, &config),
+        Command::Read { file, lines } => run_read(file, lines, &mut ctx),
+        Command::Deps { file } => run_deps(file, &mut ctx, &config),
         Command::Exec {
             cmd,
             keep,
             head,
             tail,
-        } => run_exec(cmd, keep, *head, *tail, &ctx, &config),
+        } => run_exec(cmd, keep, *head, *tail, &mut ctx, &config),
+        Command::Mcp => mcp::run(cli.config.as_deref()),
     }
 }
 
-/// Deliver the final payload: `--output` writes it to a file (bypassing
-/// stdout size limits; a confirmation goes to stderr), otherwise it is
-/// printed to stdout. The file receives exactly the stdout bytes.
-fn deliver(text: &str, output: Option<&Path>) -> Result<(), ExitError> {
-    match output {
+/// Deliver the final payload: `collect` captures it in memory (MCP mode);
+/// `--output` writes it to a file (bypassing stdout size limits; a
+/// confirmation goes to stderr); otherwise it is printed to stdout. The
+/// target receives exactly the stdout bytes.
+fn deliver(text: &str, ctx: &mut OutputCtx) -> Result<(), ExitError> {
+    if let Some(buf) = ctx.collect.as_deref_mut() {
+        buf.push_str(text);
+        return Ok(());
+    }
+    match ctx.output {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| {
                 ExitError::new(1, format!("failed to write {}: {e}", path.display()))
@@ -276,7 +295,7 @@ fn run_outline(
     path: &Path,
     no_doc: bool,
     no_lines: bool,
-    ctx: &OutputCtx,
+    ctx: &mut OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
@@ -321,7 +340,7 @@ fn run_outline(
                 "percent": saved_pct(file_tokens, delivered_tokens),
             });
         }
-        deliver(&format!("{payload}\n"), ctx.output)?;
+        deliver(&format!("{payload}\n"), ctx)?;
         return Ok(if parse_failed {
             ExitCode::from(3)
         } else {
@@ -388,7 +407,7 @@ fn run_outline(
     } else {
         format!("# {}  [{} symbols]", path.display(), symbols.len())
     };
-    deliver(&format!("{header}\n{body}"), ctx.output)?;
+    deliver(&format!("{header}\n{body}"), ctx)?;
     if parse_failed {
         eprintln!(
             "warning: parse failed ({} error node(s)); symbol list may be incomplete",
@@ -409,7 +428,7 @@ fn run_symbol(
     signature_only: bool,
     compact: bool,
     subrange: Option<&str>,
-    ctx: &OutputCtx,
+    ctx: &mut OutputCtx,
 ) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
     let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
@@ -460,7 +479,7 @@ fn run_symbol(
                 "percent": saved,
             });
         }
-        deliver(&format!("{payload}\n"), ctx.output)?;
+        deliver(&format!("{payload}\n"), ctx)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -485,11 +504,11 @@ fn run_symbol(
     } else {
         format!("# {}  {}", symbol.name, loc)
     };
-    deliver(&format!("{header}\n{slice}\n"), ctx.output)?;
+    deliver(&format!("{header}\n{slice}\n"), ctx)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_read(path: &Path, raw: &str, ctx: &OutputCtx) -> Result<ExitCode, ExitError> {
+fn run_read(path: &Path, raw: &str, ctx: &mut OutputCtx) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
     // Split on `\n` keeping the endings so CRLF slices stay verbatim
     // (byte-stability plus original line-ending fidelity).
@@ -535,7 +554,7 @@ fn run_read(path: &Path, raw: &str, ctx: &OutputCtx) -> Result<ExitCode, ExitErr
                 "percent": saved,
             });
         }
-        deliver(&format!("{payload}\n"), ctx.output)?;
+        deliver(&format!("{payload}\n"), ctx)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -553,7 +572,7 @@ fn run_read(path: &Path, raw: &str, ctx: &OutputCtx) -> Result<ExitCode, ExitErr
             group(delivered_tokens),
         ));
     }
-    deliver(&out, ctx.output)?;
+    deliver(&out, ctx)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -562,7 +581,7 @@ fn run_exec(
     keep: &[String],
     head: Option<usize>,
     tail: Option<usize>,
-    ctx: &OutputCtx,
+    ctx: &mut OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
     let words = shell_words::split(cmd)
@@ -629,6 +648,18 @@ fn run_exec(
     }
     let result = compressor.finish();
     let stats = result.stats;
+    // Over-broad keep patterns defeat compression (e.g. a pattern that is a
+    // case-insensitive substring of most lines); surface it instead of
+    // silently shipping near-full output. Deterministic, so byte stability
+    // is unaffected.
+    let ineffective_warning = stats.compression_ineffective().then(|| {
+        format!(
+            "keep patterns matched most of the output; compression saved only {}% ({} -> {} tokens) — check --keep patterns",
+            stats.saved_percent,
+            group(stats.original_tokens),
+            group(stats.compressed_tokens),
+        )
+    });
     let code = exit_code(
         &child
             .wait()
@@ -650,7 +681,11 @@ fn run_exec(
                 "percent": stats.saved_percent,
             });
         }
-        deliver(&format!("{payload}\n"), ctx.output)?;
+        if let Some(warning) = &ineffective_warning {
+            payload["warning"] = json!(warning);
+        }
+        ctx.captured_exit = Some(code as u8);
+        deliver(&format!("{payload}\n"), ctx)?;
         return Ok(ExitCode::from(code as u8));
     }
 
@@ -667,11 +702,15 @@ fn run_exec(
             group(stats.compressed_tokens),
         ));
     }
-    deliver(&out, ctx.output)?;
+    if let Some(warning) = &ineffective_warning {
+        out.push_str(&format!("warning: {warning}\n"));
+    }
+    ctx.captured_exit = Some(code as u8);
+    deliver(&out, ctx)?;
     Ok(ExitCode::from(code as u8))
 }
 
-fn run_deps(path: &Path, ctx: &OutputCtx, config: &Config) -> Result<ExitCode, ExitError> {
+fn run_deps(path: &Path, ctx: &mut OutputCtx, config: &Config) -> Result<ExitCode, ExitError> {
     let source = read_source(path)?;
     let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
@@ -705,7 +744,7 @@ fn run_deps(path: &Path, ctx: &OutputCtx, config: &Config) -> Result<ExitCode, E
                 "percent": saved,
             });
         }
-        deliver(&format!("{payload}\n"), ctx.output)?;
+        deliver(&format!("{payload}\n"), ctx)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -738,7 +777,7 @@ fn run_deps(path: &Path, ctx: &OutputCtx, config: &Config) -> Result<ExitCode, E
             ));
         }
     }
-    deliver(&out, ctx.output)?;
+    deliver(&out, ctx)?;
     Ok(ExitCode::SUCCESS)
 }
 
