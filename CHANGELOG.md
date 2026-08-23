@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Added
+
+- **`ctxctl mcp`** — optional MCP stdio adapter serving `outline` / `symbol`
+  / `read` / `deps` / `exec` as MCP tools (newline-delimited JSON-RPC 2.0).
+  The CLI remains the canonical interface; the adapter reuses the exact same
+  handlers, so output stays byte-identical. Tool failures surface as
+  `isError` results; non-zero exec exit codes are prefixed into the result
+  text.
+
+### Changed
+
+- **exec preserves diagnostic location lines** — lines matching
+  `^\s+-->` (rustc/cargo-style `--> file:line`) are now kept implicitly,
+  so a kept error header no longer loses its file:line context.
+- **exec warns on over-broad keep patterns** — when folding ran but saved
+  at most 10% (typically a `--keep` regex that case-insensitively matches
+  most lines), a deterministic warning is appended: text mode gains a final
+  `warning:` line, JSON mode a top-level `"warning"` field.
+
 ## [0.2.2] - 2026-08-14
 
 ### Added

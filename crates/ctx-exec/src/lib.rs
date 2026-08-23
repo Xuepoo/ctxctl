@@ -26,6 +26,17 @@ pub const DEFAULT_TAIL_LINES: usize = 5;
 /// (case-insensitive) are always kept, wherever they appear in the output.
 pub const DEFAULT_KEEP_PATTERNS: &[&str] = &["error", "warning", "failed", "panic", "fatal"];
 
+/// Implicit keep patterns appended to every configured list. These preserve
+/// diagnostic *location* lines (`   --> src/foo.rs:12:34`, rustc/cargo
+/// style) that carry the file:line a reader needs next to a kept error
+/// header but that contain no keep-pattern word themselves.
+pub const IMPLICIT_KEEP_PATTERNS: &[&str] = &["^\\s+-->"];
+
+/// A folded result that saved less than this many percent is flagged by
+/// [`CompressStats::compression_ineffective`] — typically an over-broad
+/// keep-pattern set matching most of the output.
+pub const INEFFECTIVE_SAVED_PERCENT_MAX: u32 = 10;
+
 /// Outputs at or below this many lines are passed through uncompressed.
 pub const DEFAULT_COLLAPSE_THRESHOLD: usize = 20;
 
@@ -74,6 +85,19 @@ pub struct CompressStats {
     pub original_tokens: usize,
     pub compressed_tokens: usize,
     pub saved_percent: u32,
+    /// True when the fold path ran (output exceeded the collapse threshold);
+    /// false for passthrough results.
+    pub collapsed: bool,
+}
+
+impl CompressStats {
+    /// True when compression ran but saved at most
+    /// [`INEFFECTIVE_SAVED_PERCENT_MAX`] percent — the signature of an
+    /// over-broad keep-pattern set matching most of the output. Passthrough
+    /// results are never flagged.
+    pub fn compression_ineffective(&self) -> bool {
+        self.collapsed && self.saved_percent <= INEFFECTIVE_SAVED_PERCENT_MAX
+    }
 }
 
 /// The result of a compression pass: the rendered text plus its statistics.
@@ -199,6 +223,7 @@ impl StreamCompressor {
                     original_tokens: tokens,
                     compressed_tokens: tokens,
                     saved_percent: 0,
+                    collapsed: false,
                 },
             };
         }
@@ -250,6 +275,7 @@ impl StreamCompressor {
                 original_tokens: self.raw_tokens,
                 compressed_tokens,
                 saved_percent: saved_pct(self.raw_tokens, compressed_tokens),
+                collapsed: true,
             },
         }
     }
@@ -329,7 +355,8 @@ struct KeepMatcher {
 
 impl KeepMatcher {
     fn new(options: &CompressOptions) -> Result<Self, ExecError> {
-        let mut patterns = Vec::with_capacity(options.keep_patterns.len());
+        let mut patterns =
+            Vec::with_capacity(options.keep_patterns.len() + IMPLICIT_KEEP_PATTERNS.len());
         for pattern in &options.keep_patterns {
             patterns.push(
                 RegexBuilder::new(pattern)
@@ -339,6 +366,16 @@ impl KeepMatcher {
                         pattern: pattern.clone(),
                         message: e.to_string(),
                     })?,
+            );
+        }
+        // Built-in location markers are compiled with the same settings and
+        // cannot fail (constant, valid patterns).
+        for pattern in IMPLICIT_KEEP_PATTERNS {
+            patterns.push(
+                RegexBuilder::new(pattern)
+                    .case_insensitive(true)
+                    .build()
+                    .expect("implicit keep pattern is valid"),
             );
         }
         Ok(Self { patterns })

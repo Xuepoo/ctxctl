@@ -2,7 +2,7 @@
 
 **你的编程代理为每一个字节的上下文付费。ctxctl 让文件和命令输出在到达模型之前就变小。**
 
-代理习惯把整个文件和原始构建日志塞进上下文，然后反复烧 token 去重读已经看过的内容。ctxctl 是一个纯 CLI、零 MCP、无状态的上下文层：代理只读它需要的符号——通过 tree-sitter AST 定位 → 原始源码切片——并用字节稳定（byte-stable）的输出压缩命令结果，稳稳命中 provider 的提示词缓存。
+代理习惯把整个文件和原始构建日志塞进上下文，然后反复烧 token 去重读已经看过的内容。ctxctl 是一个以 CLI 为核心（可选 `ctxctl mcp` 适配器）的无状态上下文层：代理只读它需要的符号——通过 tree-sitter AST 定位 → 原始源码切片——并用字节稳定（byte-stable）的输出压缩命令结果，稳稳命中 provider 的提示词缓存。
 
 ```bash
 ctxctl outline src/server.rs
@@ -79,6 +79,7 @@ ctxctl outline src/main.rs --json                  # 机器可读契约
 | `read <file> --lines 100-150,200-210` | 原始行区间切片（不走 AST）                                    |
 | `deps <file>`                         | 导入/模块依赖图（本地 / 外部 / 忽略）                         |
 | `exec <cmd> [--keep <pat>]`           | 运行命令并压缩其输出                                          |
+| `mcp`                                 | 将全部命令作为 MCP 工具经 stdio 提供（可选适配器）            |
 
 全局参数：`--json`（机器契约）、`--config <path>`、`--no-saved`。配置优先级：`--config` > `.ctxctl/config.toml`（向上逐级查找）> XDG > 默认值。
 
@@ -117,7 +118,7 @@ skill 赋予代理对 `outline` / `symbol` / `read` / `deps` / `exec` 工作流�
 
 ## 设计原则
 
-- **零 MCP、无状态**——没有服务端、没有状态文件、没有后台进程。每次调用自包含。
+- **CLI 优先、无状态**——每次调用自包含：没有状态文件、没有后台进程。可选的 `ctxctl mcp` 适配器把同一组命令作为 MCP 工具提供给 MCP 原生 agent。
 - **字节稳定输出**——没有时间戳、没有计数器；相同输入产生相同字节，让 provider 提示词缓存保持热度。
 - **切片而非摘要**——符号按字节区间取自原始源码，不做任何改写。
 - **依赖最小**——11 种语言后端全部基于 tree-sitter，零网络依赖。

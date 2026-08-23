@@ -2,7 +2,7 @@
 
 **Your coding agent pays for every byte of context. ctxctl makes files and command output smaller before they reach the model.**
 
-Agents dump whole files and raw build logs into context, then burn tokens re-reading what they already saw. ctxctl is a pure-CLI, zero-MCP, stateless context layer: an agent reads only the symbol it needs — via tree-sitter AST location → original-source slice — and compresses command output with byte-stable results that hit provider prompt caching.
+Agents dump whole files and raw build logs into context, then burn tokens re-reading what they already saw. ctxctl is a stateless context layer with a CLI-first design (optional `ctxctl mcp` adapter): an agent reads only the symbol it needs — via tree-sitter AST location → original-source slice — and compresses command output with byte-stable results that hit provider prompt caching.
 
 ```bash
 ctxctl outline src/server.rs
@@ -79,6 +79,7 @@ ctxctl outline src/main.rs --json                  # machine contract
 | `read <file> --lines 100-150,200-210` | Raw line-range slices (no AST)                                              |
 | `deps <file>`                         | Import/module dependency graph (local / external / ignored)                 |
 | `exec <cmd> [--keep <pat>]`           | Run a command, compress its output                                          |
+| `mcp`                                 | Serve all commands as MCP tools over stdio (optional adapter)               |
 
 Global flags: `--json` (machine contract), `--config <path>`, `--no-saved`. Config: `--config` > `.ctxctl/config.toml` (walk-up) > XDG > defaults.
 
@@ -117,7 +118,7 @@ The skill gives agents first-class awareness of the `outline` / `symbol` / `read
 
 ## Principles
 
-- **Zero-MCP, stateless** — no server, no state file, no background process. Every invocation is self-contained.
+- **CLI-first, stateless** — every invocation is self-contained: no state file, no background process. An optional `ctxctl mcp` adapter serves the same commands as MCP tools for MCP-native agents.
 - **Byte-stable output** — no timestamps, no counters; identical inputs produce identical bytes so provider prompt caches stay hot.
 - **Slices, not summaries** — symbols come from the original source by byte range; nothing is reworded.
 - **Minimal deps** — 11 language backends via tree-sitter, zero network dependencies.
