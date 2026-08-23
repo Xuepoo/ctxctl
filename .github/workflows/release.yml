@@ -263,7 +263,7 @@ jobs:
           {
             "name": "ctxctl",
             "version": "${VERSION}",
-            "description": "Pure CLI, zero-MCP, stateless context layer for AI coding agents",
+            "description": "CLI-first, stateless context layer for AI coding agents (optional MCP adapter)",
             "bin": { "ctxctl": "bin/ctxctl.js" },
             "optionalDependencies": {
               "ctxctl-cli-linux-x64-gnu": "${VERSION}",

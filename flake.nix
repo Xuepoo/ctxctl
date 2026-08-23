@@ -1,5 +1,5 @@
 {
-  description = "CtxCtl - pure CLI, zero-MCP, stateless context layer for AI coding agents";
+  description = "CtxCtl - CLI-first, stateless context layer for AI coding agents (optional MCP adapter)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

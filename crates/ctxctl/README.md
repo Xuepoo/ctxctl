@@ -1,6 +1,6 @@
 # ctxctl
 
-Pure-CLI, zero-MCP, stateless context layer for AI coding agents.
+CLI-first, stateless context layer for AI coding agents (optional MCP adapter).
 
 `ctxctl` lets an agent read only the part of a file it needs — a symbol
 located via a tree-sitter AST, sliced straight from the original source —
@@ -11,8 +11,8 @@ prompt caching applies to repeated reads.
 This crate is the thin `clap` shell over two engine crates:
 
 - `ctx-symbol` — tree-sitter AST symbol location + original-source slicing
-  (Rust, TypeScript, Python, Go, JavaScript, Java, C, C++, C#, Ruby, Lua
-  backends)
+  (14 backends: Rust, TypeScript, Python, Go, JavaScript, Java, C, C++, C#,
+  Ruby, Lua, HTML, CSS/SCSS, Markdown)
 - `ctx-exec` — rg-rule-driven command output compression
 
 ## Quickstart
@@ -78,6 +78,27 @@ warning: unused variable: `x` --> src/server.rs:88
 Saved ~70% (1,240 -> 372 tokens)
 ```
 
+`<cmd>` is split with shell-word quoting and spawned directly — **no shell**.
+Pipes, redirections, and compound commands need an explicit shell:
+
+```bash
+ctxctl exec "sh -c 'make 2>&1 | tail -50'"
+```
+
+Lines matching the implicit `^\s+-->` pattern (rustc/cargo diagnostic
+locations) always survive alongside kept headers; if a fold saves ≤10% a
+deterministic warning suggests reviewing `--keep`.
+
+### mcp — optional stdio MCP adapter
+
+```bash
+ctxctl mcp   # newline-delimited JSON-RPC 2.0; same five commands as tools
+```
+
+Serves `ctxctl_outline`, `ctxctl_symbol`, `ctxctl_read`, `ctxctl_deps`,
+and `ctxctl_exec` for MCP-native agents. The CLI remains canonical; see
+[docs/cli-contract.md](https://github.com/Xuepoo/ctxctl/blob/main/docs/cli-contract.md).
+
 ### deps — import dependency graph
 
 ```bash
@@ -129,7 +150,7 @@ not an external measurement.
 
 ## Contract
 
-The authoritative CLI contract lives in
-[`ctxctl-docs/cli-contract.md`](https://github.com/Xuepoo/ctxctl-docs/blob/main/cli-contract.md):
+The authoritative CLI contract is
+[`docs/cli-contract.md`](https://github.com/Xuepoo/ctxctl/blob/main/docs/cli-contract.md):
 command contracts, JSON envelopes, exit codes, config keys, and byte
 stability requirements.

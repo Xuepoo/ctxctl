@@ -6,7 +6,7 @@ version: "0.1.0"
 section: "default"
 priority: "optional"
 maintainer: "fuyu"
-description: "Pure CLI, zero-MCP, stateless context layer for AI coding agents"
+description: "CLI-first, stateless context layer for AI coding agents (optional MCP adapter)"
 license: "MIT"
 contents:
   - src: ./ctxctl-linux-x86_64

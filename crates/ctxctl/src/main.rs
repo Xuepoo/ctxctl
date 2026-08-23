@@ -1,11 +1,14 @@
-//! `ctxctl` — pure CLI, zero-MCP, stateless context layer for AI coding agents.
+//! `ctxctl` — CLI-first, stateless context layer for AI coding agents
+//! (optional `mcp` adapter).
 //!
-//! Implements the CLI contract in `ctxctl-docs/cli-contract.md` (v0.1):
+//! Implements the CLI contract in `docs/cli-contract.md`:
 //!
 //! - `outline <file>` — symbol outline plus saved% token stats
 //! - `symbol <file> --name <s>` — original source slice of one symbol
 //! - `read <file> --lines 100-150,200-210` — raw slices of line ranges
+//! - `deps <file>` — import/module edges classified local/external/ignored
 //! - `exec <cmd> [--keep <pat>]` — run a command, compress its output
+//! - `mcp` — serve all commands as MCP tools over stdio (optional adapter)
 //!
 //! Byte-stable by design: output is a pure function of the inputs and config.
 //! No timestamps, no counters, no environment dependence.
@@ -26,7 +29,7 @@ use std::process::ExitCode;
 #[command(
     name = "ctxctl",
     version,
-    about = "Pure CLI, zero-MCP, stateless context layer for AI coding agents."
+    about = "CLI-first, stateless context layer for AI coding agents (optional MCP adapter)."
 )]
 struct Cli {
     /// Explicit config file; highest priority (cli-contract.md §6).

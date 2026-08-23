@@ -129,7 +129,7 @@ Rust edition 2024 workspace: `ctx-symbol` (symbol engine), `ctx-exec` (output co
 
 ```bash
 just check      # fmt + clippy + check + test
-cargo test      # 142 tests
+cargo test      # 172 tests
 ```
 
 ## License

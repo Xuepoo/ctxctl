@@ -129,7 +129,7 @@ Rust edition 2024 workspace：`ctx-symbol`（符号引擎）、`ctx-exec`（输�
 
 ```bash
 just check      # fmt + clippy + check + test
-cargo test      # 128 tests
+cargo test      # 172 tests
 ```
 
 ## 许可证
