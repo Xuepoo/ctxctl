@@ -25,13 +25,11 @@ pub async fn handle_request(&self, id: u64) -> Result<String, Error> { ... }
 ```
 
 ```bash
-ctxctl exec "cargo build" --keep "warning|Finished"
+ctxctl exec "cargo build" --keep "Finished"
 ```
 
 ```text
-warning: unused import: `std::collections::HashMap`
-warning: field `kind` is never read
-... [212 lines omitted]
+... [214 lines omitted]
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.82s
 exit code 0 · Saved ~70% (1,240 -> 372 tokens)
 ```
