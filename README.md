@@ -39,6 +39,20 @@ No whole-file dumps. No raw log walls. Deterministic output — identical runs s
 
 English | [简体中文](README.zh-CN.md)
 
+## Measured impact
+
+From a scripted-agent benchmark (pi driving deepseek-v4-flash on OpenRouter across four real tasks: three source files of 51–96 KB plus a 1,914-line build log; single run per arm):
+
+| Measurement                                                    | Result              |
+| -------------------------------------------------------------- | ------------------- |
+| Native `ctxctl mcp` tools vs built-in read/bash — session cost | **−33%**            |
+| Same benchmark — uncached (fully billed) input tokens          | −31%                |
+| Log-analysis task via `ctxctl exec`                            | **−84% cost**       |
+| Exploring a 96 KB file through outline/symbol slices           | −86% uncached input |
+| File outlines vs whole-file reads                              | 91–95% smaller      |
+
+Savings scale inversely with provider prefix-caching quality: models whose providers cache aggressively still cut uncached input, while a weak-caching model (solar-pro4) saved 47% session cost. Exec compression is the least conditional win (~80%+ everywhere).
+
 ## Installation
 
 ### Cargo (recommended)
