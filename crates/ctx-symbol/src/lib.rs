@@ -253,6 +253,11 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     out.push_str(" ... [");
     out.push_str(&omitted.to_string());
     out.push_str(" lines omitted]");
+    let closer = parsed.language.comment_close();
+    if !closer.is_empty() {
+        out.push(' ');
+        out.push_str(closer);
+    }
     if keep_last {
         out.push('\n');
         out.push_str(last);
@@ -453,6 +458,11 @@ fn fold_at_body_node(
     out.push_str(" ... [");
     out.push_str(&omitted.to_string());
     out.push_str(" lines omitted]");
+    let closer = parsed.language.comment_close();
+    if !closer.is_empty() {
+        out.push(' ');
+        out.push_str(closer);
+    }
     if keep_closer {
         out.push('\n');
         out.push_str(last);

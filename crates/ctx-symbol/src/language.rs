@@ -74,6 +74,13 @@ pub trait Language: Send + Sync {
         "//"
     }
 
+    /// Closing delimiter for block comments ([`Self::comment_prefix`] =
+    /// `/*`); empty for line-comment languages. Appended to fold markers so
+    /// compact views of CSS-like languages stay re-parseable.
+    fn comment_close(&self) -> &'static str {
+        ""
+    }
+
     /// True if `}`/`)`/`]` lines may be kept as block closers in compact
     /// views. False for languages without brace/paren block syntax (python:
     /// indentation; ruby: `end`).
@@ -394,6 +401,9 @@ pub static REGISTRY: &[&'static dyn Language] = &[
     &crate::lang::csharp::CSharpLang,
     &crate::lang::ruby::RubyLang,
     &crate::lang::lua::LuaLang,
+    &crate::lang::html::HtmlLang,
+    &crate::lang::css::CssLang,
+    &crate::lang::markdown::MarkdownLang,
 ];
 
 /// True if the node kind is a definition type for the given language.
@@ -505,13 +515,31 @@ fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut
     {
         let range = parsed.language.definition_byte_range(&node);
         let sig = clean_signature(&parsed.language.signature(&node, &parsed.source));
-        let (start, end) = (node.start_position(), node.end_position());
+        // Displayed lines follow the *slice*: when a backend extends the
+        // range past the node (markdown sections, attached decorators), the
+        // outline must advertise what a slice will actually deliver.
+        let node_range = node.byte_range();
+        let (start_line, end_line) = if range == node_range {
+            (node.start_position().row + 1, node.end_position().row + 1)
+        } else {
+            let src = &parsed.source;
+            let before = src[..range.start].matches('\n').count();
+            let inside = src[range.clone()].matches('\n').count();
+            (
+                before + 1,
+                if src[range.clone()].ends_with('\n') {
+                    before + inside
+                } else {
+                    before + inside + 1
+                },
+            )
+        };
         let doc = parsed.language.doc_comment(parsed, &node);
         out.push(Symbol {
             name,
             kind: sym_kind,
-            start_line: start.row + 1,
-            end_line: end.row + 1,
+            start_line,
+            end_line,
             byte_range: range,
             signature: sig,
             doc_comment: doc,

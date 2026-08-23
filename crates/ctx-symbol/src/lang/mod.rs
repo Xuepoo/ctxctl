@@ -4,10 +4,13 @@
 pub mod c;
 pub mod cpp;
 pub mod csharp;
+pub mod css;
 pub mod go;
+pub mod html;
 pub mod java;
 pub mod javascript;
 pub mod lua;
+pub mod markdown;
 pub mod python;
 pub mod ruby;
 pub mod rust;

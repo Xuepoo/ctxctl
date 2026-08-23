@@ -18,6 +18,12 @@ pub enum SymbolKind {
     Variable,
     Trait,
     Type,
+    /// Markdown heading (its slice covers the whole section).
+    Heading,
+    /// CSS/SCSS ruleset (the selector list is the name).
+    Rule,
+    /// HTML element carrying an `id` attribute (name = id value).
+    Element,
 }
 
 /// A single symbol located in a source file.
