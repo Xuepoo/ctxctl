@@ -25,14 +25,15 @@ pub async fn handle_request(&self, id: u64) -> Result<String, Error> { ... }
 ```
 
 ```bash
-ctxctl exec "cargo build"
+ctxctl exec "cargo build" --keep "warning|Finished"
 ```
 
 ```text
-$ cargo build
-error[E0308]: mismatched types --> src/main.rs:12
-... [34 lines omitted]
-Saved ~70% (1,240 -> 372 tokens)
+warning: unused import: `std::collections::HashMap`
+warning: field `kind` is never read
+... [212 lines omitted]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.82s
+exit code 0 · Saved ~70% (1,240 -> 372 tokens)
 ```
 
 不整文件倾倒，不堆原始日志。输出确定性强——相同输入产出相同字节，缓存持续命中。

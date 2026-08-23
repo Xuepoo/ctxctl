@@ -25,14 +25,15 @@ pub async fn handle_request(&self, id: u64) -> Result<String, Error> { ... }
 ```
 
 ```bash
-ctxctl exec "cargo build"
+ctxctl exec "cargo build" --keep "warning|Finished"
 ```
 
 ```text
-$ cargo build
-error[E0308]: mismatched types --> src/main.rs:12
-... [34 lines omitted]
-Saved ~70% (1,240 -> 372 tokens)
+warning: unused import: `std::collections::HashMap`
+warning: field `kind` is never read
+... [212 lines omitted]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.82s
+exit code 0 · Saved ~70% (1,240 -> 372 tokens)
 ```
 
 No whole-file dumps. No raw log walls. Deterministic output — identical runs stay cache-hot.
