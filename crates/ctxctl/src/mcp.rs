@@ -57,12 +57,21 @@ pub fn run(config_path: Option<&Path>) -> Result<ExitCode, crate::ExitError> {
 /// Handle one incoming message. Returns `None` for notifications (no `id`)
 /// and messages without a method — they get no response.
 fn handle(msg: &Value, config: &Config) -> Option<Value> {
-    let method = msg.get("method").and_then(Value::as_str)?;
+    // Notifications carry no id and get no response.
     let id = msg.get("id");
     if id.is_none() || id.is_some_and(Value::is_null) {
         return None;
     }
     let id = id.expect("checked above");
+    // A request (id present) without a usable method must be answered,
+    // or the client would wait forever.
+    let Some(method) = msg.get("method").and_then(Value::as_str) else {
+        return Some(error_response(
+            id,
+            -32600,
+            "invalid request: missing or non-string method".to_string(),
+        ));
+    };
     Some(match method {
         "initialize" => success(
             id,
@@ -132,7 +141,7 @@ fn tool_definitions() -> Value {
                 "name": string_desc("Exact symbol name"),
                 "kind": json!({
                     "type": "string",
-                    "enum": ["class","struct","enum","interface","function","method","module","const","var","trait","type"],
+                    "enum": ["class","struct","enum","interface","function","method","module","const","var","trait","type","heading","rule","element"],
                     "description": "Restrict the match to a symbol kind"
                 }),
                 "signature": opt_bool("Return the signature only"),
@@ -257,7 +266,7 @@ fn run_tool(
             let kind = match args.get("kind").and_then(Value::as_str) {
                 Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
                     format!(
-                        "unknown kind `{raw}` (expected class|struct|enum|interface|function|method|module|const|var|trait|type)"
+                        "unknown kind `{raw}` (expected class|struct|enum|interface|function|method|module|const|var|trait|type|heading|rule|element)"
                     )
                 })?),
                 None => None,
@@ -331,6 +340,9 @@ fn parse_kind(raw: &str) -> Option<SymbolKindArg> {
         ("var", SymbolKindArg::Variable),
         ("trait", SymbolKindArg::Trait),
         ("type", SymbolKindArg::Type),
+        ("heading", SymbolKindArg::Heading),
+        ("rule", SymbolKindArg::Rule),
+        ("element", SymbolKindArg::Element),
     ];
     kinds
         .iter()
@@ -375,6 +387,16 @@ mod tests {
     fn notifications_get_no_response() {
         let msg = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert!(handle(&msg, &test_config()).is_none());
+    }
+
+    #[test]
+    fn request_without_method_gets_invalid_request() {
+        // An id-carrying message without a method must be answered, or a
+        // client would block forever waiting for its response.
+        let msg = json!({ "jsonrpc": "2.0", "id": 9 });
+        let response = handle(&msg, &test_config()).expect("a response");
+        assert_eq!(response["error"]["code"], -32600);
+        assert_eq!(response["id"], 9);
     }
 
     #[test]

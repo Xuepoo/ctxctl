@@ -33,7 +33,7 @@ impl Language for HtmlLang {
     fn symbol_name(&self, node: &tree_sitter::Node, source: &str) -> Option<String> {
         let start_tag = node
             .children(&mut node.walk())
-            .find(|c| c.kind() == "start_tag")?;
+            .find(|c| c.kind() == "start_tag" || c.kind() == "self_closing_tag")?;
         for child in start_tag.children(&mut start_tag.walk()) {
             if child.kind() != "attribute" {
                 continue;

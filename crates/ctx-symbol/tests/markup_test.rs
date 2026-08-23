@@ -117,3 +117,11 @@ fn markdown_section_slice_covers_chapter() {
     assert!(slice.contains("## Configure"));
     assert!(slice.contains("Deep settings."));
 }
+
+#[test]
+fn html_self_closing_elements_are_anchors_too() {
+    let src = "<img id=\"logo\" src=\"x.png\"/>\n<br><p id=\"tail\">end</p>\n";
+    let syms = kinds("icons.html", &src);
+    let names: Vec<&str> = syms.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(names, ["logo", "tail"]);
+}

@@ -86,6 +86,12 @@ enum SymbolKindArg {
     Trait,
     #[value(name = "type")]
     Type,
+    #[value(name = "heading")]
+    Heading,
+    #[value(name = "rule")]
+    Rule,
+    #[value(name = "element")]
+    Element,
 }
 
 impl SymbolKindArg {
@@ -102,6 +108,9 @@ impl SymbolKindArg {
             SymbolKindArg::Variable => ctx_symbol::SymbolKind::Variable,
             SymbolKindArg::Trait => ctx_symbol::SymbolKind::Trait,
             SymbolKindArg::Type => ctx_symbol::SymbolKind::Type,
+            SymbolKindArg::Heading => ctx_symbol::SymbolKind::Heading,
+            SymbolKindArg::Rule => ctx_symbol::SymbolKind::Rule,
+            SymbolKindArg::Element => ctx_symbol::SymbolKind::Element,
         }
     }
 }
@@ -948,6 +957,9 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Trait => "trait",
         SymbolKind::Type => "type",
         SymbolKind::Module => "module",
+        SymbolKind::Heading => "heading",
+        SymbolKind::Rule => "rule",
+        SymbolKind::Element => "element",
     }
 }
 
@@ -964,6 +976,9 @@ fn kind_alias(kind: SymbolKind) -> &'static str {
         SymbolKind::Trait => "trait",
         SymbolKind::Type => "type",
         SymbolKind::Module => "mod",
+        SymbolKind::Heading => "head",
+        SymbolKind::Rule => "rule",
+        SymbolKind::Element => "elem",
     }
 }
 
