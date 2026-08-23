@@ -345,3 +345,61 @@ fn stream_compressor_handles_ten_million_plain_lines() {
     assert!(result.stats.kept_lines < 200);
     assert!(result.stats.saved_percent > 90);
 }
+
+// --- Location-line fidelity (CTX-0024) -------------------------------------
+
+/// rustc-style diagnostic location lines survive even when no configured
+/// keep pattern matches them, so a kept error header keeps its file:line.
+#[test]
+fn keeps_diagnostic_location_lines() {
+    let mut input = lines(12, "l");
+    input.push_str("\nerror[E0308]: mismatched types in merge_01\n");
+    input.push_str("   --> crate-mod06/src/parser.rs:88:19\n");
+    input.push_str(&lines(12, "m"));
+
+    let result = compress(&input, &opts()).unwrap();
+    assert!(result.text.contains("error[E0308]: mismatched types"));
+    assert!(result.text.contains("--> crate-mod06/src/parser.rs:88:19"));
+}
+
+/// Location lines are kept on their own merits — even with the configured
+/// pattern list replaced by something that matches nothing.
+#[test]
+fn location_lines_kept_with_unrelated_patterns() {
+    let mut options = opts();
+    options.keep_patterns = vec!["nomatchanything".to_string()];
+    let mut input = lines(12, "l");
+    input.push_str("\n  --> src/only/location.rs:7:1\n");
+    input.push_str(&lines(12, "m"));
+
+    let result = compress(&input, &options).unwrap();
+    assert!(result.text.contains("--> src/only/location.rs:7:1"));
+}
+
+// --- Over-broad keep detection (CTX-0024) ----------------------------------
+
+/// A keep pattern that matches nearly every line defeats compression; the
+/// stats expose it via `compression_ineffective`.
+#[test]
+fn over_broad_keep_pattern_is_flagged() {
+    let mut input = lines(30, "test case run ");
+    input.push('\n');
+    let result = compress(&input, &opts()).unwrap();
+    // Defaults do not match these lines: normal compression.
+    assert!(!result.stats.compression_ineffective());
+
+    let mut broad = opts();
+    broad.keep_patterns = vec!["test".to_string()];
+    let result = compress(&input, &broad).unwrap();
+    assert!(result.stats.compression_ineffective());
+}
+
+/// Passthrough results (at or below the collapse threshold) are never
+/// flagged: nothing was compressed, so there is nothing to warn about.
+#[test]
+fn passthrough_is_not_flagged_as_ineffective() {
+    let input = lines(5, "plain\n");
+    let result = compress(&input, &opts()).unwrap();
+    assert_eq!(result.stats.saved_percent, 0);
+    assert!(!result.stats.compression_ineffective());
+}
