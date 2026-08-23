@@ -121,7 +121,7 @@ The skill gives agents first-class awareness of the `outline` / `symbol` / `read
 - **CLI-first, stateless** — every invocation is self-contained: no state file, no background process. An optional `ctxctl mcp` adapter serves the same commands as MCP tools for MCP-native agents.
 - **Byte-stable output** — no timestamps, no counters; identical inputs produce identical bytes so provider prompt caches stay hot.
 - **Slices, not summaries** — symbols come from the original source by byte range; nothing is reworded.
-- **Minimal deps** — 11 language backends via tree-sitter, zero network dependencies.
+- **Minimal deps** — 14 language backends via tree-sitter, zero network dependencies.
 
 ## Development
 

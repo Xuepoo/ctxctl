@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Added
 
+- **HTML, CSS/SCSS and Markdown backends** — `outline` / `symbol` /
+  `--kind` now cover 14 languages. HTML extracts elements carrying an
+  `id` attribute (name = id value); CSS extracts rulesets (selector list =
+  name, nested `@media` included; `.scss` is best-effort via the CSS
+  grammar); Markdown extracts ATX and setext headings, and each heading's
+  slice spans its whole section — `symbol --name "Chapter"` yields the
+  entire chapter text.
+- Three new symbol kinds: `heading`, `rule`, `element` (accepted by
+  `symbol --kind`, reported in outline JSON).
 - **`ctxctl mcp`** — optional MCP stdio adapter serving `outline` / `symbol`
   / `read` / `deps` / `exec` as MCP tools (newline-delimited JSON-RPC 2.0).
   The CLI remains the canonical interface; the adapter reuses the exact same
