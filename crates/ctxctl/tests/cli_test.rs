@@ -1037,6 +1037,40 @@ fn exec_invalid_keep_pattern_fails() {
 }
 
 #[test]
+fn exec_rejects_unquoted_metacharacters() {
+    let output = run(&["exec", "true && echo hi"]);
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    let err = stderr(&output);
+    assert!(err.contains("single command"), "hint: {err}");
+    assert!(err.contains("sh -c"), "hint: {err}");
+}
+
+#[test]
+fn exec_allows_quoted_metacharacters() {
+    let cmd = "printf 'a && b | c; d <e>f\\n'";
+    let output = run(&["exec", cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("a && b | c; d <e>f"),
+        "quoted text must pass through: {}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn exec_rejects_pipe_and_semicolon() {
+    for cmd in ["ls | head -1", "true; echo done"] {
+        let output = run(&["exec", cmd]);
+        assert!(!output.status.success(), "cmd: {cmd}");
+        assert!(
+            stderr(&output).contains("sh -c"),
+            "cmd: {cmd}, stderr: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
 fn exec_merges_stderr_without_blank_line_gap() {
     // stdout ends with \n; the merged output must not gain an extra blank
     // line before the stderr content.

@@ -588,6 +588,45 @@ fn run_read(path: &Path, raw: &str, ctx: &mut OutputCtx) -> Result<ExitCode, Exi
     Ok(ExitCode::SUCCESS)
 }
 
+/// Returns the first shell metacharacter outside quotes/backslash escapes.
+/// `exec` spawns argv directly instead of through a shell, so an unquoted
+/// metacharacter would silently become a plain argument ("pwd && ls" runs
+/// pwd with junk args) rather than a compound command.
+fn first_unquoted_metachar(cmd: &str) -> Option<char> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in cmd.chars() {
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quote = None;
+                }
+            }
+            _ => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                } else if matches!(ch, '|' | '&' | ';' | '(' | ')' | '<' | '>' | '\n') {
+                    return Some(ch);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn run_exec(
     cmd: &str,
     keep: &[String],
@@ -596,6 +635,14 @@ fn run_exec(
     ctx: &mut OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
+    if let Some(ch) = first_unquoted_metachar(cmd) {
+        return Err(ExitError::new(
+            1,
+            format!(
+                "exec runs a single command, not a shell; found unquoted `{ch}` — wrap compound commands as sh -c \"<command>\""
+            ),
+        ));
+    }
     let words = shell_words::split(cmd)
         .map_err(|e| ExitError::new(1, format!("invalid command line: {e}")))?;
     if words.is_empty() {
