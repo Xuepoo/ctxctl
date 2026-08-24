@@ -446,6 +446,11 @@ fn fold_at_body_node(
         out.push_str(parsed.language.comment_prefix());
         out.push(' ');
         out.push_str(&omit_marker(omitted));
+        let closer = parsed.language.comment_close();
+        if !closer.is_empty() {
+            out.push(' ');
+            out.push_str(closer);
+        }
         if keep_tail {
             out.push_str(nl);
             out.push_str(tail);

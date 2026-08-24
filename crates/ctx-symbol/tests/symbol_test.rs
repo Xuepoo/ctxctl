@@ -1453,3 +1453,43 @@ fn doc_comment_requires_direct_adjacency() {
     let close = symbols.iter().find(|s| s.name == "close").unwrap();
     assert_eq!(close.doc_comment.as_deref(), Some("Attached docs."));
 }
+
+fn css_path() -> &'static Path {
+    Path::new("sample.css")
+}
+
+#[test]
+fn css_rule_set_fold_keeps_block_comment_closed() {
+    // The fold marker is a block comment in CSS: it must carry its closing
+    // `*/`, otherwise the kept `}` line is swallowed by the unterminated
+    // comment and the compact view no longer re-parses.
+    let src = "
+body {
+    background-color: #f0f0f8;
+    color: #000000;
+}
+
+table.form {
+    border: 1px solid #333;
+    padding: 2px;
+}
+";
+    let parsed = ctx_symbol::parse(css_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"body"), "symbols: {names:?}");
+    assert!(names.contains(&"table.form"), "symbols: {names:?}");
+    for sym in &symbols {
+        let compact = ctx_symbol::compact_symbol(&parsed, sym);
+        let re = ctx_symbol::parse(css_path(), &compact).unwrap();
+        assert!(
+            !re.tree.root_node().has_error(),
+            "compact must re-parse cleanly: {compact}"
+        );
+        assert!(
+            compact.contains(" lines omitted] */"),
+            "block-comment marker must be closed: {compact}"
+        );
+        assert!(compact.trim_end().ends_with('}'), "closer kept: {compact}");
+    }
+}
