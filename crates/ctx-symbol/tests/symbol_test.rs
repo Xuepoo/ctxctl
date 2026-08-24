@@ -1304,3 +1304,31 @@ fn ast_anchored_fold_c_functions_and_typedefs() {
         "re-parse: {compact}"
     );
 }
+
+/// Regression (CTX-0030): AST walks must not recurse on the native stack.
+/// A JS file with ~100k nested parens used to abort the whole process with a
+/// stack overflow inside `extract_symbols` / `parse_error_count` (fatal and
+/// unrecoverable for the CLI and the MCP server). Every public entry that
+/// triggers a tree walk — extraction, error counting, imports, compaction —
+/// must return deterministically instead of crashing.
+#[test]
+fn walks_survive_deeply_nested_source() {
+    let depth = 120_000;
+    let source = format!(
+        "function f() {{ return {}1{}; }}",
+        "(".repeat(depth),
+        ")".repeat(depth)
+    );
+
+    let parsed = ctx_symbol::parse(Path::new("deep.js"), &source).unwrap();
+
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["f"]);
+
+    assert_eq!(ctx_symbol::parse_error_count(&parsed), 0);
+    assert!(ctx_symbol::extract_imports(&parsed).is_empty());
+
+    let compact = ctx_symbol::compact_symbol(&parsed, &symbols[0]);
+    assert!(compact.contains("function f("), "header kept: {compact}");
+}

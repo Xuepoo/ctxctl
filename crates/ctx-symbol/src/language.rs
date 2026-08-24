@@ -170,20 +170,39 @@ fn parse_tree(
         .ok_or_else(|| SymbolError::Parse("tree-sitter returned no tree".into()))
 }
 
-/// Count ERROR/MISSING nodes in a tree.
-pub(crate) fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
-    fn walk(node: tree_sitter::Node, count: &mut usize) {
-        if node.is_error() || node.is_missing() {
-            *count += 1;
-            return;
+/// Pre-order traversal of `root` without native-stack recursion: pending
+/// nodes live on an explicit heap stack, so arbitrarily deep nesting cannot
+/// overflow the stack (CTX-0030). The visitor returns `false` to skip a
+/// node's subtree; children are visited left-to-right exactly like a
+/// recursive walk, keeping all outputs byte-identical.
+pub(crate) fn walk_preorder(
+    root: tree_sitter::Node,
+    mut visit: impl FnMut(tree_sitter::Node) -> bool,
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if !visit(node) {
+            continue;
         }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(child, count);
+        for i in (0..node.child_count()).rev() {
+            if let Some(kid) = node.child(i as u32) {
+                stack.push(kid);
+            }
         }
     }
+}
+
+/// Count ERROR/MISSING nodes in a tree.
+pub(crate) fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
     let mut count = 0;
-    walk(tree.root_node(), &mut count);
+    walk_preorder(tree.root_node(), |node| {
+        if node.is_error() || node.is_missing() {
+            count += 1;
+            // error nodes may wrap children; they are already counted once
+            return false;
+        }
+        true
+    });
     count
 }
 
@@ -192,23 +211,19 @@ pub(crate) fn count_error_nodes(tree: &tree_sitter::Tree) -> usize {
 /// file; the byte span weighs that much more heavily than one-off token
 /// errors (e.g. an annotation macro).
 fn error_metrics(tree: &tree_sitter::Tree) -> (usize, usize) {
-    fn walk(node: tree_sitter::Node, bytes: &mut usize, count: &mut usize) {
+    let (mut bytes, mut count) = (0, 0);
+    walk_preorder(tree.root_node(), |node| {
         if node.is_error() {
-            *bytes += node.end_byte() - node.start_byte();
-            *count += 1;
-            return;
+            bytes += node.end_byte() - node.start_byte();
+            count += 1;
+            return false;
         }
         if node.is_missing() {
-            *count += 1;
-            return;
+            count += 1;
+            return false;
         }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(child, bytes, count);
-        }
-    }
-    let (mut bytes, mut count) = (0, 0);
-    walk(tree.root_node(), &mut bytes, &mut count);
+        true
+    });
     (bytes, count)
 }
 
@@ -504,53 +519,50 @@ fn strip_trailing_comment(line: &str) -> &str {
 /// Walk a tree and collect all definition symbols in source order.
 pub fn extract_symbols(parsed: &ParsedSource) -> Vec<Symbol> {
     let mut out = Vec::new();
-    collect_definitions(parsed, parsed.tree.root_node(), &mut out);
+    collect_definitions(parsed, &mut out);
     out
 }
 
-fn collect_definitions(parsed: &ParsedSource, node: tree_sitter::Node, out: &mut Vec<Symbol>) {
-    let kind = node.kind();
-    if let Some(sym_kind) = is_definition(parsed.language, kind)
-        && let Some(name) = parsed.language.symbol_name(&node, &parsed.source)
-    {
-        let range = parsed.language.definition_byte_range(&node);
-        let sig = clean_signature(&parsed.language.signature(&node, &parsed.source));
-        // Displayed lines follow the *slice*: when a backend extends the
-        // range past the node (markdown sections, attached decorators), the
-        // outline must advertise what a slice will actually deliver.
-        let node_range = node.byte_range();
-        let (start_line, end_line) = if range == node_range {
-            (node.start_position().row + 1, node.end_position().row + 1)
-        } else {
-            let src = &parsed.source;
-            let before = src[..range.start].matches('\n').count();
-            let inside = src[range.clone()].matches('\n').count();
-            (
-                before + 1,
-                if src[range.clone()].ends_with('\n') {
-                    before + inside
-                } else {
-                    before + inside + 1
-                },
-            )
-        };
-        let doc = parsed.language.doc_comment(parsed, &node);
-        out.push(Symbol {
-            name,
-            kind: sym_kind,
-            start_line,
-            end_line,
-            byte_range: range,
-            signature: sig,
-            doc_comment: doc,
-        });
-    }
-    if node.child_count() > 0 {
-        let mut child = node.walk();
-        for kid in node.children(&mut child) {
-            collect_definitions(parsed, kid, out);
+fn collect_definitions(parsed: &ParsedSource, out: &mut Vec<Symbol>) {
+    walk_preorder(parsed.tree.root_node(), |node| {
+        let kind = node.kind();
+        if let Some(sym_kind) = is_definition(parsed.language, kind)
+            && let Some(name) = parsed.language.symbol_name(&node, &parsed.source)
+        {
+            let range = parsed.language.definition_byte_range(&node);
+            let sig = clean_signature(&parsed.language.signature(&node, &parsed.source));
+            // Displayed lines follow the *slice*: when a backend extends the
+            // range past the node (markdown sections, attached decorators), the
+            // outline must advertise what a slice will actually deliver.
+            let node_range = node.byte_range();
+            let (start_line, end_line) = if range == node_range {
+                (node.start_position().row + 1, node.end_position().row + 1)
+            } else {
+                let src = &parsed.source;
+                let before = src[..range.start].matches('\n').count();
+                let inside = src[range.clone()].matches('\n').count();
+                (
+                    before + 1,
+                    if src[range.clone()].ends_with('\n') {
+                        before + inside
+                    } else {
+                        before + inside + 1
+                    },
+                )
+            };
+            let doc = parsed.language.doc_comment(parsed, &node);
+            out.push(Symbol {
+                name,
+                kind: sym_kind,
+                start_line,
+                end_line,
+                byte_range: range,
+                signature: sig,
+                doc_comment: doc,
+            });
         }
-    }
+        true
+    });
 }
 
 /// Look one level up in the tree for a doc-comment sibling immediately before
