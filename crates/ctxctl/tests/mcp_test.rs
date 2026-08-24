@@ -446,9 +446,10 @@ fn nonexistent_file_becomes_is_error_naming_the_problem() {
 }
 
 #[test]
-fn mistyped_lines_argument_names_the_key() {
-    // An integer `lines` used to be silently unusable; it must be rejected
-    // naming both the key and the expected type.
+fn numeric_lines_argument_reads_that_line() {
+    // Forensics P02: agents send `lines: 100` as a JSON number. It now
+    // coerces to its decimal string form and keeps the single-line meaning
+    // instead of failing validation.
     let mut server = Server::spawn();
     let sample = server.fixture("sample.rs", SAMPLE_RS);
     let answer = server.call(
@@ -457,10 +458,267 @@ fn mistyped_lines_argument_names_the_key() {
         &serde_json::json!({ "file": sample, "lines": 4 }),
     );
     server.shutdown();
+    assert_ne!(
+        answer["result"]["isError"].as_bool(),
+        Some(true),
+        "{answer}"
+    );
+    let text = result_text(&answer);
+    assert!(
+        text.contains("pub fn add(a: i32, b: i32) -> i32 {"),
+        "{text}"
+    );
+}
+
+// --- Agent call-pattern ergonomics (CTX-0047, matrix P00-P10) -----------------
+
+#[test]
+fn p00_absolute_path_without_lines_returns_whole_file() {
+    // 83/83 historical calls used absolute paths; they are legal when they
+    // stay inside the pinned workspace. Omitted `lines` means whole file.
+    let mut server = Server::spawn();
+    let body = "alpha\nbeta\ngamma\n";
+    server.fixture("p00.txt", body);
+    let absolute = server.workspace.join("p00.txt");
+    let answer = server.call(30, "ctxctl_read", &serde_json::json!({ "file": absolute }));
+    server.shutdown();
+    assert_ne!(
+        answer["result"]["isError"].as_bool(),
+        Some(true),
+        "{answer}"
+    );
+    let text = result_text(&answer);
+    for expected in ["alpha", "beta", "gamma"] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+}
+
+#[test]
+fn p01_absolute_path_with_empty_lines_returns_whole_file() {
+    let mut server = Server::spawn();
+    let body = "one\ntwo\n";
+    server.fixture("p01.txt", body);
+    let absolute = server.workspace.join("p01.txt");
+    let answer = server.call(
+        31,
+        "ctxctl_read",
+        &serde_json::json!({ "file": absolute, "lines": "" }),
+    );
+    server.shutdown();
+    assert_ne!(
+        answer["result"]["isError"].as_bool(),
+        Some(true),
+        "{answer}"
+    );
+    let text = result_text(&answer);
+    assert!(text.contains("one") && text.contains("two"), "{text}");
+}
+
+#[test]
+fn absolute_paths_work_for_every_file_tool() {
+    let mut server = Server::spawn();
+    let sample = server.fixture("sample.rs", SAMPLE_RS);
+    let deps_fixture = server.fixture("deps.rs", DEPS_RS);
+    let outline = server.call(
+        40,
+        "ctxctl_outline",
+        &serde_json::json!({ "file": server.workspace.join(&sample) }),
+    );
+    let deps = server.call(
+        41,
+        "ctxctl_deps",
+        &serde_json::json!({ "file": server.workspace.join(deps_fixture) }),
+    );
+    let symbol = server.call(
+        42,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": server.workspace.join(&sample), "name": "add" }),
+    );
+    server.shutdown();
+    for answer in [outline, deps, symbol] {
+        assert_ne!(
+            answer["result"]["isError"].as_bool(),
+            Some(true),
+            "absolute in-workspace path must succeed: {answer}"
+        );
+    }
+}
+
+#[test]
+fn absolute_escape_outside_workspace_is_rejected() {
+    let mut server = Server::spawn();
+    // Nonexistent target: rejected by lexical containment alone, so this is
+    // deterministic regardless of the host filesystem.
+    let outside = server.call(
+        43,
+        "ctxctl_read",
+        &serde_json::json!({ "file": "/definitely/not/existing/ctxctl/probe.txt", "lines": "1-1" }),
+    );
+    // Existing target reached through a lexical `..` escape.
+    let secret = server
+        .workspace
+        .parent()
+        .expect("workspace has a parent")
+        .join("outside.txt");
+    std::fs::write(&secret, "hush\n").expect("write outside fixture");
+    let walked = server.call(
+        44,
+        "ctxctl_read",
+        &serde_json::json!({
+            "file": server.workspace.join("..").join("outside.txt"),
+            "lines": "1-1"
+        }),
+    );
+    server.shutdown();
+    std::fs::remove_file(secret).ok();
+    for answer in [outside, walked] {
+        assert_eq!(answer["result"]["isError"], true, "{answer}");
+        let text = result_text(&answer);
+        assert!(text.contains("path escapes workspace root"), "{text}");
+        assert!(!text.contains("hush"), "content must not leak: {text}");
+    }
+}
+
+#[test]
+fn unknown_tool_error_enumerates_available_tools() {
+    let mut server = Server::spawn();
+    let answer = server.call(45, "ctxctl_nope", &serde_json::json!({ "whatever": true }));
+    server.shutdown();
+    assert_eq!(answer["id"], 45);
     assert_eq!(answer["result"]["isError"], true, "{answer}");
     let text = result_text(&answer);
-    assert!(text.contains("lines"), "{text}");
-    assert!(text.contains("string"), "{text}");
+    assert!(
+        text.contains(
+            "unknown tool `ctxctl_nope`; available: ctxctl_deps, ctxctl_exec, ctxctl_outline, ctxctl_read, ctxctl_symbol"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn missing_required_arg_error_includes_usage_hint() {
+    let mut server = Server::spawn();
+    let answer = server.call(46, "ctxctl_outline", &serde_json::json!({}));
+    let read_hint = server.call(47, "ctxctl_read", &serde_json::json!({}));
+    server.shutdown();
+    let text = result_text(&answer);
+    assert!(text.contains("missing or empty argument: file"), "{text}");
+    assert!(
+        text.contains(
+            "expected: {\"file\": \"<workspace-relative or absolute path under workspace>\", \"no_doc\": <boolean>, \"no_lines\": <boolean>}"
+        ),
+        "{text}"
+    );
+    let hint = result_text(&read_hint);
+    assert!(
+        hint.contains("\"lines\": \"<string>\""),
+        "read hint lists every table arg: {hint}"
+    );
+}
+
+#[test]
+fn unknown_arg_error_lists_valid_keys() {
+    let mut server = Server::spawn();
+    let source = server.fixture("plain.txt", "alpha\nbeta\n");
+    let answer = server.call(
+        48,
+        "ctxctl_read",
+        &serde_json::json!({ "file": source, "encoding": "utf8" }),
+    );
+    server.shutdown();
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    let text = result_text(&answer);
+    assert!(
+        text.contains("unknown argument `encoding`; valid arguments: file, lines"),
+        "{text}"
+    );
+}
+
+#[test]
+fn mistyped_scalar_args_name_key_and_types() {
+    let mut server = Server::spawn();
+    let bool_lines = server.call(
+        49,
+        "ctxctl_read",
+        &serde_json::json!({ "file": "x.rs", "lines": true }),
+    );
+    let object_file = server.call(50, "ctxctl_deps", &serde_json::json!({ "file": {} }));
+    server.shutdown();
+    let text = result_text(&bool_lines);
+    assert!(
+        text.contains("argument `lines` must be a string, got boolean"),
+        "{text}"
+    );
+    let text = result_text(&object_file);
+    assert!(
+        text.contains("argument `file` must be a string, got object"),
+        "{text}"
+    );
+}
+
+#[test]
+fn symbol_not_found_error_suggests_similar_names() {
+    let mut server = Server::spawn();
+    server.fixture(
+        "nodes.rs",
+        "struct NodeHandle;\nstruct NodeState;\nstruct WrapNode;\nfn unrelated() {}\n",
+    );
+    let typo = server.call(
+        51,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "nodes.rs", "name": "nodehand" }),
+    );
+    let broad = server.call(
+        52,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "nodes.rs", "name": "node" }),
+    );
+    let hopeless = server.call(
+        53,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "nodes.rs", "name": "zzz" }),
+    );
+    server.shutdown();
+    let text = result_text(&typo);
+    assert_eq!(typo["result"]["isError"], true);
+    assert!(
+        text.contains("symbol not found: nodehand; similar: NodeHandle"),
+        "{text}"
+    );
+    let text = result_text(&broad);
+    assert!(
+        text.contains("similar: NodeHandle, NodeState") || text.contains("similar: NodeState"),
+        "substring matches included: {text}"
+    );
+    assert!(text.contains("WrapNode"), "{text}");
+    let text = result_text(&hopeless);
+    assert!(
+        !text.contains("similar"),
+        "no suggestions must be silent: {text}"
+    );
+}
+
+#[test]
+fn read_schema_marks_lines_optional_and_documents_formats() {
+    let mut server = Server::spawn();
+    let tools = server.request(r#"{"jsonrpc":"2.0","id":54,"method":"tools/list"}"#);
+    server.shutdown();
+    let read = tools["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|t| t["name"] == "ctxctl_read")
+        .expect("read tool");
+    assert_eq!(
+        read["inputSchema"]["required"],
+        serde_json::json!(["file"]),
+        "lines must no longer be required"
+    );
+    let description = read["inputSchema"]["properties"]["lines"]["description"]
+        .as_str()
+        .expect("lines description");
+    assert!(description.contains("whole file"), "{description}");
+    assert!(description.contains("N-M"), "{description}");
 }
 
 #[test]
