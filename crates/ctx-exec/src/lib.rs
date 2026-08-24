@@ -358,6 +358,14 @@ impl KeepMatcher {
         let mut patterns =
             Vec::with_capacity(options.keep_patterns.len() + IMPLICIT_KEEP_PATTERNS.len());
         for pattern in &options.keep_patterns {
+            if pattern.trim().is_empty() {
+                return Err(ExecError::InvalidPattern {
+                    pattern: pattern.clone(),
+                    message: "empty or whitespace-only pattern matches every line and silently \
+                              disables compression; remove it"
+                        .to_string(),
+                });
+            }
             patterns.push(
                 RegexBuilder::new(pattern)
                     .case_insensitive(true)

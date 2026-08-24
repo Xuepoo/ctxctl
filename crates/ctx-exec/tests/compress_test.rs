@@ -151,6 +151,33 @@ fn invalid_pattern_errors_even_for_small_outputs() {
 }
 
 #[test]
+fn empty_keep_pattern_is_rejected() {
+    let mut custom = opts();
+    custom.keep_patterns.push(String::new());
+    let err = StreamCompressor::new(&custom)
+        .err()
+        .expect("empty pattern must be rejected")
+        .to_string();
+    assert!(err.contains("empty"), "message should explain why: {err}");
+    assert!(
+        compress("some output", &custom).is_err(),
+        "an empty pattern must not compile to match-everything"
+    );
+}
+
+#[test]
+fn whitespace_only_keep_pattern_is_rejected() {
+    let mut custom = opts();
+    custom.keep_patterns.push(" \t ".to_string());
+    let err = StreamCompressor::new(&custom)
+        .err()
+        .expect("whitespace-only pattern must be rejected")
+        .to_string();
+    assert!(err.contains("empty"), "message should explain why: {err}");
+    assert!(compress("some output", &custom).is_err());
+}
+
+#[test]
 fn output_is_byte_stable() {
     let mut input = lines(30, "l");
     input.push_str("\nerror: e\n");
