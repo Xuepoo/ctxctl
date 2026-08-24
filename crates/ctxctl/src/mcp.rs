@@ -159,12 +159,12 @@ fn tool_definitions() -> Value {
         ),
         (
             "ctxctl_read",
-            "Raw 1-based line ranges from the original source (no AST), e.g. \"100-150,200-210\". Open-ended ranges like 40- are allowed.",
+            "Raw 1-based line ranges from the original source (no AST). Omit `lines` (or pass an empty string) to receive the whole file.",
             json!({
                 "file": string_desc("Path of the source file"),
-                "lines": string_desc("Comma-separated inclusive ranges, e.g. 100-150,200-210"),
+                "lines": opt_string("Comma-separated inclusive ranges, e.g. \"100-150,200-210\". Formats: \"N\", \"N-M\", \"N-\" (open-ended to end of file). Omitted or empty = whole file."),
             }),
-            vec!["file", "lines"],
+            vec!["file"],
         ),
         (
             "ctxctl_deps",
@@ -279,43 +279,101 @@ const EXEC_ARGS: &[(&str, ArgKind)] = &[
     ("tail", ArgKind::Int),
 ];
 
+/// The tool registry: every exposed tool with its argument table. Declared
+/// alphabetically so every consumer that iterates it (`tools/list` order is
+/// defined separately; error enumerations and usage hints) emits the same
+/// deterministic order.
+const TOOL_TABLE: &[(&str, &[(&str, ArgKind)])] = &[
+    ("ctxctl_deps", DEPS_ARGS),
+    ("ctxctl_exec", EXEC_ARGS),
+    ("ctxctl_outline", OUTLINE_ARGS),
+    ("ctxctl_read", READ_ARGS),
+    ("ctxctl_symbol", SYMBOL_ARGS),
+];
+
 fn arg_schema(tool: &str) -> Option<&'static [(&'static str, ArgKind)]> {
-    match tool {
-        "ctxctl_outline" => Some(OUTLINE_ARGS),
-        "ctxctl_symbol" => Some(SYMBOL_ARGS),
-        "ctxctl_read" => Some(READ_ARGS),
-        "ctxctl_deps" => Some(DEPS_ARGS),
-        "ctxctl_exec" => Some(EXEC_ARGS),
-        _ => None,
-    }
+    TOOL_TABLE
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, schema)| *schema)
+}
+
+/// Comma-separated list of registered tool names in deterministic
+/// (alphabetical) order, for unknown-tool errors.
+fn available_tools() -> String {
+    TOOL_TABLE
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Check arguments against the advertised schema before dispatch: unknown
-/// keys and mistyped values are rejected naming the offending argument
-/// instead of being coerced or defaulted. Required-key presence and
-/// emptiness stay with the handlers (`require_str`). Explicit `null`
-/// counts as absent — clients omit optional fields that way.
-fn validate_arguments(tool: &str, args: &Value) -> Result<(), String> {
+/// keys are rejected listing the valid ones, mistyped values are rejected
+/// naming the argument and expected type. Benign coercion: a JSON number
+/// for a string-typed argument becomes its decimal string form (`lines:
+/// 100` → `"100"`), matching how agents actually call the tools. Required-
+/// key presence and emptiness stay with the handlers (`require_str`).
+/// Explicit `null` counts as absent — clients omit optional fields that way.
+fn validate_arguments(tool: &str, args: &mut Value) -> Result<(), String> {
     let Some(schema) = arg_schema(tool) else {
         return Ok(()); // unknown tools are rejected by `run_tool`
     };
-    let object = args
+    if !args.is_object() {
+        return Err("arguments must be an object".to_string());
+    }
+    let keys: Vec<String> = args
         .as_object()
-        .ok_or_else(|| "arguments must be an object".to_string())?;
-    for key in object.keys() {
-        if !schema.iter().any(|(known, _)| *known == key.as_str()) {
-            return Err(format!("unknown argument: {key}"));
+        .expect("checked above")
+        .keys()
+        .cloned()
+        .collect();
+    for key in &keys {
+        if !schema.iter().any(|(known, _)| known == key) {
+            let valid = schema
+                .iter()
+                .map(|(known, _)| *known)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unknown argument `{key}`; valid arguments: {valid}"
+            ));
         }
     }
     for (key, kind) in schema {
-        let Some(value) = object.get(*key) else {
+        let Some(value) = args.get_mut(*key) else {
             continue;
         };
-        if !value.is_null() && !kind.accepts(value) {
-            return Err(format!("argument `{key}` must be {}", kind.label()));
+        if value.is_null() {
+            continue;
+        }
+        match kind {
+            ArgKind::Str if value.is_number() => {
+                *value = Value::String(value.as_number().expect("is_number").to_string());
+            }
+            _ if !kind.accepts(value) => {
+                return Err(format!(
+                    "argument `{key}` must be {}, got {}",
+                    kind.label(),
+                    json_type_name(value)
+                ));
+            }
+            _ => {}
         }
     }
     Ok(())
+}
+
+/// Human-readable JSON type name for "got X" diagnostics.
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 // --- Tool dispatch ----------------------------------------------------------
@@ -329,11 +387,11 @@ fn call_tool(
     config: &Config,
     root: &Path,
 ) -> Result<String, String> {
-    let args = arguments
+    let mut args = arguments
         .filter(|value| !value.is_null())
         .cloned()
         .unwrap_or_else(|| json!({}));
-    validate_arguments(name, &args)?;
+    validate_arguments(name, &mut args)?;
     let mut out = String::new();
     let (status, diagnostic) = {
         let mut ctx = OutputCtx {
@@ -387,12 +445,12 @@ fn run_tool(
 ) -> Result<Option<u8>, String> {
     let code = match name {
         "ctxctl_outline" => {
-            let file = require_path(root, args, "file")?;
+            let file = require_file(name, root, args)?;
             crate::run_outline(&file, flag(args, "no_doc"), flag(args, "no_lines"), ctx, config)
         }
         "ctxctl_symbol" => {
-            let file = require_path(root, args, "file")?;
-            let symbol = require_str(args, "name")?;
+            let file = require_file(name, root, args)?;
+            let symbol = require_str(args, "name").map_err(|e| usage_hinted(name, e))?;
             let kind = match args.get("kind").and_then(Value::as_str) {
                 Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
                     format!(
@@ -411,18 +469,27 @@ fn run_tool(
                 ctx,
                 config,
             )
+            .map_err(|e| with_similar_symbols(&file, symbol, e))
         }
         "ctxctl_read" => {
-            let file = require_path(root, args, "file")?;
-            let lines = require_str(args, "lines")?;
+            let file = require_file(name, root, args)?;
+            // `lines` mirrors the CLI contract: omitted or empty means the
+            // whole file (an open-ended range achieves exactly that).
+            let lines = args
+                .get("lines")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("1-");
             crate::run_read(&file, lines, ctx, config)
         }
         "ctxctl_deps" => {
-            let file = require_path(root, args, "file")?;
+            let file = require_file(name, root, args)?;
             crate::run_deps(&file, ctx, config)
         }
         "ctxctl_exec" => {
-            let cmd = require_str(args, "cmd")?.to_string();
+            let cmd = require_str(args, "cmd")
+                .map_err(|e| usage_hinted(name, e))?
+                .to_string();
             let keep: Vec<String> = args
                 .get("keep")
                 .and_then(Value::as_array)
@@ -438,24 +505,69 @@ fn run_tool(
             let tail = args.get("tail").and_then(Value::as_u64).map(|v| v as usize);
             crate::run_exec(&cmd, &keep, head, tail, ctx, config)
         }
-        other => return Err(format!("unknown tool: {other}")),
+        other => {
+            return Err(format!(
+                "unknown tool `{other}`; available: {}",
+                available_tools()
+            ))
+        }
     }
     .map_err(|e| e.message)?;
     Ok(exit_status(&code))
 }
 
-/// Fetch a required file argument and confine it to `root`. The MCP surface
-/// serves remote agents, so `file` values are untrusted input.
-fn require_path(root: &Path, args: &Value, key: &str) -> Result<PathBuf, String> {
-    pinned_path(root, key, require_str(args, key)?)
+/// Fetch the required `file` argument (with usage hint on absence) and
+/// confine it to `root`. The MCP surface serves remote agents, so `file`
+/// values are untrusted input.
+fn require_file(tool: &str, root: &Path, args: &Value) -> Result<PathBuf, String> {
+    let raw = require_str(args, "file").map_err(|e| usage_hinted(tool, e))?;
+    pinned_path(root, "file", raw)
+}
+
+/// Append the tool's argument-table example to a missing-argument error so
+/// agents can self-correct without a round-trip to the schema.
+fn usage_hinted(tool: &str, err: String) -> String {
+    format!("{err}\n{}", usage_hint(tool))
+}
+
+/// Build `expected: {"key": <placeholder>, …}` from the tool's argument
+/// table, so the hint can never drift from the schema.
+fn usage_hint(tool: &str) -> String {
+    let Some(schema) = arg_schema(tool) else {
+        return String::new();
+    };
+    let members = schema
+        .iter()
+        .map(|(key, kind)| format!("\"{key}\": {}", placeholder(key, *kind)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("expected: {{{members}}}")
+}
+
+/// JSON-shaped placeholder for one argument in a usage hint.
+fn placeholder(key: &str, kind: ArgKind) -> &'static str {
+    match kind {
+        ArgKind::Str => match key {
+            "file" => "\"<workspace-relative or absolute path under workspace>\"",
+            "name" => "\"<exact symbol name>\"",
+            "cmd" => "\"<command line>\"",
+            _ => "\"<string>\"",
+        },
+        ArgKind::Bool => "<boolean>",
+        ArgKind::Int => "<integer>",
+        ArgKind::StrList => "[\"<string>\"]",
+    }
 }
 
 /// Resolve one tool-provided path against the workspace root.
 ///
-/// Rejected outright: absolute paths, any `..` that would climb above the
-/// root, and existing targets whose symlink resolution lands outside the
-/// root. Everything else is returned joined under `root` (not canonicalized,
-/// so handlers keep their own not-found diagnostics).
+/// Absolute paths are legal iff they stay inside the workspace after
+/// normalization (lexical `.`/`..` resolution; existing targets are also
+/// symlink-resolved). Relative paths resolve against `root` as before. Any
+/// escape — lexical climb above the root, or an existing target whose
+/// symlink resolution lands outside — is rejected. Accepted paths are
+/// returned as given (normalized), not canonicalized, so handlers keep
+/// their own not-found diagnostics.
 fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
     // Inputs are passed explicitly rather than captured so static analysis
     // credits every parameter read (code-scanning alert #2).
@@ -463,8 +575,24 @@ fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
         format!("invalid argument `{key}`: {raw}: {detail}path escapes workspace root")
     };
     let candidate = Path::new(raw);
+    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if candidate.is_absolute() {
-        return Err(escape(key, raw, "absolute paths are not allowed; "));
+        // CTX-0047: absolute paths are legal iff they stay inside the
+        // workspace. Normalize lexically first (`.` dropped, `..` applied
+        // without touching the filesystem), then decide containment:
+        // existing targets are symlink-resolved, nonexistent ones fall back
+        // to the lexical form.
+        let Some(normalized) = lexically_normalized_absolute(candidate) else {
+            return Err(escape(key, raw, ""));
+        };
+        let inside = match normalized.canonicalize() {
+            Ok(resolved) => resolved.starts_with(&base),
+            Err(_) => normalized.starts_with(root),
+        };
+        if !inside {
+            return Err(escape(key, raw, ""));
+        }
+        return Ok(normalized);
     }
     let mut normalized = PathBuf::new();
     for component in candidate.components() {
@@ -485,7 +613,6 @@ fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
     // Symlink hardening: an in-root link must not point out of the tree.
     // (Lexical containment above already rules out textual escapes; this
     // catches links to existing outside targets.)
-    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Ok(resolved) = joined.canonicalize()
         && !resolved.starts_with(&base)
     {
@@ -496,6 +623,78 @@ fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(joined)
+}
+
+/// Lexically normalize an absolute path without filesystem access: `.` is
+/// dropped, `..` pops the previous component (a `..` at the root stays
+/// there, POSIX-style). Returns `None` for paths with no anchor.
+fn lexically_normalized_absolute(path: &Path) -> Option<PathBuf> {
+    let mut anchor = PathBuf::new();
+    let mut parts: Vec<std::ffi::OsString> = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => anchor.push(prefix.as_os_str()),
+            std::path::Component::RootDir => anchor.push(std::path::MAIN_SEPARATOR.to_string()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(part) => parts.push(part.to_os_string()),
+        }
+    }
+    if anchor.as_os_str().is_empty() {
+        return None;
+    }
+    Some(parts.into_iter().fold(anchor, |acc, part| acc.join(part)))
+}
+
+/// Suggest look-alike symbol names for a failed exact-match lookup: up to 3
+/// case-insensitive prefix-then-substring matches from the file's actual
+/// symbols. Best-effort — any read/parse failure yields no suggestions.
+fn similar_symbols(file: &Path, query: &str) -> Vec<String> {
+    let Ok(source) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    let Ok(symbols) = ctx_symbol::outline(&source, file) else {
+        return Vec::new();
+    };
+    let query = query.to_lowercase();
+    let mut ranked: Vec<String> = Vec::new();
+    let mut push_unique = |candidates: Vec<String>| {
+        for name in candidates {
+            if !ranked.contains(&name) {
+                ranked.push(name);
+            }
+        }
+    };
+    let mut prefix_hits = Vec::new();
+    let mut substring_hits = Vec::new();
+    for symbol in symbols {
+        let name = symbol.name;
+        let lower = name.to_lowercase();
+        if lower.starts_with(&query) {
+            prefix_hits.push(name);
+        } else if lower.contains(&query) {
+            substring_hits.push(name);
+        }
+    }
+    push_unique(prefix_hits);
+    push_unique(substring_hits);
+    ranked.truncate(3);
+    ranked
+}
+
+/// Attach `; similar: A, B` to `symbol not found:` errors when the file has
+/// close names; all other errors pass through untouched.
+fn with_similar_symbols(file: &Path, query: &str, mut err: crate::ExitError) -> crate::ExitError {
+    if err.message.starts_with("symbol not found: ") {
+        let suggestions = similar_symbols(file, query);
+        if !suggestions.is_empty() {
+            err.message.push_str("; similar: ");
+            err.message.push_str(&suggestions.join(", "));
+        }
+    }
+    err
 }
 
 fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -737,16 +936,142 @@ mod tests {
         // reword them.
         let root = test_root();
         assert_eq!(
-            pinned_path(&root, "file", "/etc/passwd"),
-            Err(
-                "invalid argument `file`: /etc/passwd: absolute paths are not allowed; path escapes workspace root"
-                    .to_string()
-            )
-        );
-        assert_eq!(
             pinned_path(&root, "file", "../outside.txt"),
             Err("invalid argument `file`: ../outside.txt: path escapes workspace root".to_string())
         );
+        // Absolute escapes (existing target or not) share one message.
+        assert_eq!(
+            pinned_path(&root, "file", "/etc/passwd"),
+            Err("invalid argument `file`: /etc/passwd: path escapes workspace root".to_string())
+        );
+        assert_eq!(
+            pinned_path(&root, "file", "/definitely/not/existing/ctxctl/probe.txt"),
+            Err(
+                "invalid argument `file`: /definitely/not/existing/ctxctl/probe.txt: path escapes workspace root"
+                    .to_string()
+            )
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pinned_path_accepts_absolute_paths_inside_root() {
+        let root = test_root();
+        let name = fixture(&root, "inner.txt", "content\n");
+        // Existing in-root target, spelled absolutely: accepted as-is.
+        let absolute = root.join(&name);
+        assert_eq!(
+            pinned_path(&root, "file", &absolute.display().to_string()),
+            Ok(absolute),
+        );
+        // Nonexistent in-root target: lexical containment decides.
+        let missing = root.join("not-yet.txt");
+        assert_eq!(
+            pinned_path(&root, "file", &missing.display().to_string()),
+            Ok(missing),
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pinned_path_normalizes_absolute_parent_walks() {
+        // `..` inside an absolute path is resolved lexically; the result
+        // stays accepted when it lands back inside the root.
+        let root = test_root();
+        fixture(&root, "inner.txt", "content\n");
+        let walked = format!("{}/sub/../inner.txt", root.display());
+        assert_eq!(
+            pinned_path(&root, "file", &walked),
+            Ok(root.join("inner.txt")),
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn validate_arguments_coerces_numbers_for_str_args() {
+        for raw in [json!(100), json!(4)] {
+            let mut args = json!({ "file": "x.rs", "lines": raw });
+            validate_arguments("ctxctl_read", &mut args).expect("number coerces");
+            let coerced = args["lines"].as_str().expect("string after coercion");
+            assert_eq!(coerced, raw.as_i64().expect("int").to_string());
+        }
+    }
+
+    #[test]
+    fn validate_arguments_still_rejects_non_numeric_mistypes() {
+        let mut bool_lines = json!({ "lines": true });
+        assert_eq!(
+            validate_arguments("ctxctl_read", &mut bool_lines),
+            Err("argument `lines` must be a string, got boolean".to_string())
+        );
+        let mut object_file = json!({ "file": {} });
+        assert_eq!(
+            validate_arguments("ctxctl_deps", &mut object_file),
+            Err("argument `file` must be a string, got object".to_string())
+        );
+        let mut string_head = json!({ "cmd": "echo", "head": "3" });
+        assert_eq!(
+            validate_arguments("ctxctl_exec", &mut string_head),
+            Err("argument `head` must be an integer, got string".to_string())
+        );
+        let mut mixed_keep = json!({ "cmd": "echo", "keep": ["error", 5] });
+        assert_eq!(
+            validate_arguments("ctxctl_exec", &mut mixed_keep),
+            Err("argument `keep` must be an array of strings, got array".to_string())
+        );
+        // Explicit null stays "absent".
+        let mut null_lines = json!({ "file": "x.rs", "lines": null });
+        validate_arguments("ctxctl_read", &mut null_lines).expect("null is absent");
+    }
+
+    #[test]
+    fn unknown_argument_error_lists_valid_keys() {
+        let mut args = json!({ "file": "x.rs", "encoding": "utf8" });
+        assert_eq!(
+            validate_arguments("ctxctl_read", &mut args),
+            Err("unknown argument `encoding`; valid arguments: file, lines".to_string())
+        );
+    }
+
+    #[test]
+    fn usage_hints_are_built_from_the_argument_table() {
+        assert_eq!(
+            usage_hint("ctxctl_read"),
+            "expected: {\"file\": \"<workspace-relative or absolute path under workspace>\", \"lines\": \"<string>\"}"
+        );
+        assert_eq!(
+            usage_hint("ctxctl_outline"),
+            "expected: {\"file\": \"<workspace-relative or absolute path under workspace>\", \"no_doc\": <boolean>, \"no_lines\": <boolean>}"
+        );
+        assert_eq!(
+            usage_hint("ctxctl_exec"),
+            "expected: {\"cmd\": \"<command line>\", \"keep\": [\"<string>\"], \"head\": <integer>, \"tail\": <integer>}"
+        );
+    }
+
+    #[test]
+    fn available_tools_lists_registry_in_deterministic_order() {
+        assert_eq!(
+            available_tools(),
+            "ctxctl_deps, ctxctl_exec, ctxctl_outline, ctxctl_read, ctxctl_symbol"
+        );
+    }
+
+    #[test]
+    fn similar_symbols_rank_prefix_then_substring_and_cap_at_three() {
+        let root = test_root();
+        fixture(
+            &root,
+            "nodes.rs",
+            "struct NodeHandle;\nstruct NodeState;\nstruct NodeThingy;\nstruct WrapNode;\nfn unrelated() {}\n",
+        );
+        let file = root.join("nodes.rs");
+        assert_eq!(
+            similar_symbols(&file, "node"),
+            vec!["NodeHandle", "NodeState", "NodeThingy"]
+        );
+        assert_eq!(similar_symbols(&file, "handle"), vec!["NodeHandle"]);
+        assert!(similar_symbols(&file, "zzz").is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 
