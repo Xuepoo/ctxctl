@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ctx-symbol", "crates/ctx-exec", "crates/ctxctl"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 license = "MIT"
 authors = ["fuyu"]
@@ -11,8 +11,8 @@ repository = "https://github.com/Xuepoo/ctxctl"
 homepage = "https://ctxctl.xuepoo.xyz"
 
 [workspace.dependencies]
-ctx-symbol = { path = "crates/ctx-symbol", version = "0.3.2" }
-ctx-exec = { path = "crates/ctx-exec", version = "0.3.2" }
+ctx-symbol = { path = "crates/ctx-symbol", version = "0.3.3" }
+ctx-exec = { path = "crates/ctx-exec", version = "0.3.3" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
