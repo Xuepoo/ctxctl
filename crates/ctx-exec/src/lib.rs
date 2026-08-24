@@ -433,7 +433,11 @@ impl StreamCompressor {
 }
 
 fn omit_marker(n: usize) -> String {
-    format!("... [{n} lines omitted]")
+    if n == 1 {
+        "... [1 line omitted]".to_string()
+    } else {
+        format!("... [{n} lines omitted]")
+    }
 }
 
 fn saved_pct(original: usize, compressed: usize) -> u32 {

@@ -55,7 +55,21 @@ pub trait Language: Send + Sync {
 
     /// Produce the "signature" line(s) for a definition node — usually the
     /// first line or a compact header.
-    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String;
+    ///
+    /// Default: the node's first source line, trimmed (`…` when empty).
+    /// Backends whose signature is not the first line (e.g. CSS, where the
+    /// selector list alone is the header) override this.
+    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String {
+        let text = source
+            .get(node.start_byte()..node.end_byte().min(source.len()))
+            .unwrap_or("…");
+        let line = text.split('\n').next().unwrap_or("").trim();
+        if line.is_empty() {
+            "…".to_string()
+        } else {
+            line.to_string()
+        }
+    }
 
     /// Return true if `node` may carry a doc comment immediately above it.
     /// Backends override to handle comment idioms (e.g. `//`, `///`, `/** */`).
@@ -478,12 +492,8 @@ pub(crate) fn clean_signature(raw: &str) -> String {
         }
     }
 
-    if sig.len() > MAX_SIGNATURE {
-        let mut cut = MAX_SIGNATURE - 1;
-        while cut > 0 && !sig.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        sig.truncate(cut);
+    if sig.chars().count() > MAX_SIGNATURE {
+        sig = sig.chars().take(MAX_SIGNATURE - 1).collect();
         sig.push('…');
     }
     if sig.is_empty() {
@@ -575,29 +585,51 @@ fn collect_definitions(parsed: &ParsedSource, out: &mut Vec<Symbol>) {
 }
 
 /// Look one level up in the tree for a doc-comment sibling immediately before
-/// the definition node. Best-effort; backends with richer comment handling can
-/// override via their own [`Language::doc_comment`].
+/// the definition node. "Immediately" is strict: the previous sibling must be
+/// a comment and no blank line may sit between them — a comment separated
+/// from code by a blank line or by another definition documents nothing.
+/// Best-effort; backends with richer comment handling can override via their
+/// own [`Language::doc_comment`].
 pub(crate) fn doc_comment_above(parsed: &ParsedSource, node: &tree_sitter::Node) -> Option<String> {
     if !parsed.language.has_doc_comment(node) {
         return None;
     }
-    let mut prev = node.prev_sibling();
-    let mut depth = 0;
-    while let Some(sib) = prev {
-        if sib.kind().contains("comment") {
-            let text = strip_comment_markers(sib.utf8_text(parsed.source.as_bytes()).ok()?);
-            if text.is_empty() {
-                return None;
-            }
-            return Some(text);
-        }
-        depth += 1;
-        if depth > 2 {
-            break;
-        }
-        prev = sib.prev_sibling();
+    let cmt = node.prev_sibling()?;
+    if !cmt.kind().contains("comment") {
+        return None;
     }
-    None
+    let raw = cmt.utf8_text(parsed.source.as_bytes()).ok()?;
+    // Some grammars fold the comment's trailing newline into the comment
+    // node; cut it so adjacency is judged on real separating lines only.
+    let text_end = cmt.start_byte() + raw.trim_end_matches(['\n', '\r']).len();
+    let gap = &parsed.source[text_end..node.start_byte()];
+    if has_blank_line(gap) {
+        return None;
+    }
+    let text = strip_comment_markers(raw);
+    if text.is_empty() {
+        return None;
+    }
+    Some(text)
+}
+
+/// True when `gap` contains a blank line: a newline followed only by
+/// whitespace before the next newline (or end of gap).
+fn has_blank_line(gap: &str) -> bool {
+    let mut after_newline = false;
+    for ch in gap.chars() {
+        match ch {
+            '\n' => {
+                if after_newline {
+                    return true;
+                }
+                after_newline = true;
+            }
+            ' ' | '\t' | '\r' => {}
+            _ => after_newline = false,
+        }
+    }
+    false
 }
 
 /// Strip comment markers from a doc-comment node's text: `///`/`//!`/`//`,
@@ -678,5 +710,21 @@ mod tests {
         let sig = clean_signature(&format!("fn very_long_name{}(", "x".repeat(300)));
         assert!(sig.ends_with('…'));
         assert!(sig.chars().count() <= 120);
+    }
+
+    #[test]
+    fn cjk_signatures_cap_by_chars_not_bytes() {
+        // 100 CJK chars are 300 bytes: a byte-based cap would truncate this
+        // to ~40 chars; the cap counts characters, so it is kept whole.
+        let sig = clean_signature(&"汉".repeat(100));
+        assert_eq!(sig.chars().count(), 100);
+        assert!(!sig.contains('…'));
+    }
+
+    #[test]
+    fn truncation_still_caps_cjk_at_max_chars() {
+        let sig = clean_signature(&format!("fn f() {{ {} }}", "汉".repeat(200)));
+        assert_eq!(sig.chars().count(), 120);
+        assert!(sig.ends_with('…'));
     }
 }

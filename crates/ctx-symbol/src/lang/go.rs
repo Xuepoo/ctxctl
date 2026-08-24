@@ -43,19 +43,6 @@ impl Language for GoLang {
             .map(|s| s.trim().to_string())
     }
 
-    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String {
-        let start = node.start_byte();
-        let text = source
-            .get(start..node.end_byte().min(source.len()))
-            .unwrap_or("…");
-        let line = text.split('\n').next().unwrap_or("").trim();
-        if line.is_empty() {
-            "…".to_string()
-        } else {
-            line.to_string()
-        }
-    }
-
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         true
     }

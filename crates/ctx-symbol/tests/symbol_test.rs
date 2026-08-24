@@ -764,7 +764,7 @@ fn compact_crlf_source_folds_with_stable_line_endings() {
         "directive line kept: {compact:?}"
     );
     assert!(
-        compact.contains("// ... [1 lines omitted]"),
+        compact.contains("// ... [1 line omitted]"),
         "macro folds, comment continuation kept: {compact:?}"
     );
     assert_eq!(
@@ -818,7 +818,7 @@ fn compact_crlf_comment_masking_stays_aligned() {
         .expect("M extracted");
     let compact = ctx_symbol::compact_symbol(&parsed, &m);
     assert!(
-        compact.contains("// ... [1 lines omitted]"),
+        compact.contains("// ... [1 line omitted]"),
         "closed comment does not block the fold: {compact:?}"
     );
     assert_eq!(
@@ -1428,4 +1428,28 @@ fn walks_survive_deeply_nested_source() {
 
     let compact = ctx_symbol::compact_symbol(&parsed, &symbols[0]);
     assert!(compact.contains("function f("), "header kept: {compact}");
+}
+
+#[test]
+fn doc_comment_requires_direct_adjacency() {
+    // A blank line between comment and definition breaks attachment.
+    let src = "\n/// Orphan docs.\n\npub fn lonely() {}\n";
+    let symbols = ctx_symbol::outline(src, rust_path()).unwrap();
+    let lonely = symbols.iter().find(|s| s.name == "lonely").unwrap();
+    assert_eq!(lonely.doc_comment, None);
+
+    // An intervening non-comment sibling breaks attachment too.
+    let src = "\n/// Orphan docs.\npub struct Gap {}\npub fn distant() {}\n";
+    let symbols = ctx_symbol::outline(src, rust_path()).unwrap();
+    let distant = symbols.iter().find(|s| s.name == "distant").unwrap();
+    assert_eq!(distant.doc_comment, None);
+    // The comment still documents its immediate neighbor.
+    let gap = symbols.iter().find(|s| s.name == "Gap").unwrap();
+    assert_eq!(gap.doc_comment.as_deref(), Some("Orphan docs."));
+
+    // Directly-above comments keep attaching.
+    let src = "\n/// Attached docs.\npub fn close() {}\n";
+    let symbols = ctx_symbol::outline(src, rust_path()).unwrap();
+    let close = symbols.iter().find(|s| s.name == "close").unwrap();
+    assert_eq!(close.doc_comment.as_deref(), Some("Attached docs."));
 }

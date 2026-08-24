@@ -141,7 +141,7 @@ enum Command {
         /// Symbol name (exact).
         #[arg(long)]
         name: String,
-        /// Restrict the match to a symbol kind (class, method, variable, …).
+        /// Restrict the match to a symbol kind (class, method, var, …).
         /// Without it, the first same-name symbol in source order wins.
         #[arg(long, value_enum)]
         kind: Option<SymbolKindArg>,
@@ -169,6 +169,10 @@ enum Command {
         file: PathBuf,
     },
     /// Run a command and print its output compressed by ctx-exec.
+    #[command(after_help = "The command must be passed as a single quoted argument \
+                            (shell-word splitting applies to it):\n\n    \
+                            ctxctl exec \"cargo test\"          # ok\n    \
+                            ctxctl exec cargo test            # error: unexpected argument 'test'")]
     Exec {
         /// Command line to run; shell-word quoting applies, e.g. `"cargo test -- --list"`.
         #[arg(allow_hyphen_values = true)]

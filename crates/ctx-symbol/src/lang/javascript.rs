@@ -1,5 +1,6 @@
 //! JavaScript language backend.
 
+use crate::lang::util::string_value;
 use crate::language::Language;
 use crate::symbol::SymbolKind;
 use std::path::Path;
@@ -50,19 +51,6 @@ impl Language for JavaScriptLang {
             .map(|s| s.trim().to_string())
     }
 
-    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String {
-        let start = node.start_byte();
-        let text = source
-            .get(start..node.end_byte().min(source.len()))
-            .unwrap_or("…");
-        let line = text.split('\n').next().unwrap_or("").trim();
-        if line.is_empty() {
-            "…".to_string()
-        } else {
-            line.to_string()
-        }
-    }
-
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         true
     }
@@ -105,16 +93,4 @@ impl Language for JavaScriptLang {
         })()
         .unwrap_or_default()
     }
-}
-
-/// Text of a string literal node without its quotes.
-fn string_value(node: tree_sitter::Node, source: &str) -> Option<String> {
-    let text = node.utf8_text(source.as_bytes()).ok()?.trim();
-    let unquoted = text.strip_prefix(['\'', '"'])?;
-    Some(
-        unquoted
-            .strip_suffix(['\'', '"'])
-            .unwrap_or(unquoted)
-            .to_string(),
-    )
 }
