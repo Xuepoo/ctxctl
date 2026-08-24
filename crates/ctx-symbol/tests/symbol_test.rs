@@ -1453,3 +1453,92 @@ fn doc_comment_requires_direct_adjacency() {
     let close = symbols.iter().find(|s| s.name == "close").unwrap();
     assert_eq!(close.doc_comment.as_deref(), Some("Attached docs."));
 }
+
+fn css_path() -> &'static Path {
+    Path::new("sample.css")
+}
+
+#[test]
+fn css_rule_set_fold_keeps_block_comment_closed() {
+    // The fold marker is a block comment in CSS: it must carry its closing
+    // `*/`, otherwise the kept `}` line is swallowed by the unterminated
+    // comment and the compact view no longer re-parses.
+    let src = "
+body {
+    background-color: #f0f0f8;
+    color: #000000;
+}
+
+table.form {
+    border: 1px solid #333;
+    padding: 2px;
+}
+";
+    let parsed = ctx_symbol::parse(css_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"body"), "symbols: {names:?}");
+    assert!(names.contains(&"table.form"), "symbols: {names:?}");
+    for sym in &symbols {
+        let compact = ctx_symbol::compact_symbol(&parsed, sym);
+        let re = ctx_symbol::parse(css_path(), &compact).unwrap();
+        assert!(
+            !re.tree.root_node().has_error(),
+            "compact must re-parse cleanly: {compact}"
+        );
+        assert!(
+            compact.contains(" lines omitted] */"),
+            "block-comment marker must be closed: {compact}"
+        );
+        assert!(compact.trim_end().ends_with('}'), "closer kept: {compact}");
+    }
+}
+
+#[test]
+fn compact_output_is_byte_stable_across_invocations() {
+    // Byte-stability is sacred: the same input parsed twice must yield the
+    // exact same compact bytes for every symbol, on every path (AST-anchored
+    // brace fold, indentation fold, line-heuristic macro fold).
+    let cases: &[(&'static Path, &str)] = &[
+        (
+            c_path(),
+            "#define LOG(t) \\\n    log_write(t)\nint add(int a, int b) {\n    int r = a + b;\n    return r;\n}\ntypedef struct Point {\n    int x;\n    int y;\n} Point;\n",
+        ),
+        (
+            py_path(),
+            "class Point:\n    def norm(self):\n        x = self.x\n        y = self.y\n        return x * x + y * y\n",
+        ),
+        (
+            go_path(),
+            "type Point struct {\n\tx int\n\ty int\n}\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+        ),
+        (
+            css_path(),
+            "table.form {\n    border: 1px solid #333;\n    padding: 2px;\n}\n",
+        ),
+        (
+            rust_path(),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    let r = a + b;\n    r\n}\n",
+        ),
+    ];
+    for (path, src) in cases {
+        let first = {
+            let parsed = ctx_symbol::parse(path, src).unwrap();
+            let symbols = ctx_symbol::extract_symbols(&parsed);
+            symbols
+                .iter()
+                .map(|s| ctx_symbol::compact_symbol(&parsed, s))
+                .collect::<Vec<_>>()
+        };
+        assert!(!first.is_empty(), "no symbols for {path:?}");
+        let second = {
+            let parsed = ctx_symbol::parse(path, src).unwrap();
+            let symbols = ctx_symbol::extract_symbols(&parsed);
+            symbols
+                .iter()
+                .map(|s| ctx_symbol::compact_symbol(&parsed, s))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first, second, "compact bytes must be stable for {path:?}");
+    }
+}

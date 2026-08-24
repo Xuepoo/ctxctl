@@ -34,7 +34,7 @@ fn assert_deterministic(source: &str, path: &Path) {
 
 /// Every byte range must land inside the original source and slice back out
 /// as valid UTF-8.
-fn assert_slices_in_bounds<'a>(source: &str, symbols: &'a [Symbol]) {
+fn assert_slices_in_bounds(source: &str, symbols: &[Symbol]) {
     for s in symbols {
         let bytes = source
             .as_bytes()

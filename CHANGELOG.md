@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [Unreleased]
+
+### Fixed
+
+- **CSS rule-set folds re-parse** — the AST-anchored fold marker in
+  `compact_symbol` now carries its closing `*/` for block-comment languages,
+  so folded CSS rule sets keep a parseable `}` closer. Corpus re-parse
+  regressions on `/usr/include`, `/usr/lib/go/src`, and `/usr/lib/python3.14`
+  (55,498 files, 1,879,020 raw-parse-ok slices): 458 → 0.
+
 ## [0.3.1] - 2026-08-24
 
 ### Security
