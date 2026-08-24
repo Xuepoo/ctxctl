@@ -22,8 +22,10 @@ use config::Config;
 use ctx_symbol::{ParsedSource, Symbol, SymbolKind};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::process::Command as StdCommand;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
@@ -635,6 +637,39 @@ fn first_unquoted_metachar(cmd: &str) -> Option<char> {
     None
 }
 
+/// Maximum wall-clock time an `exec` child may run before it is killed.
+const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
+/// Poll granularity while watching an `exec` child.
+const EXEC_TIMEOUT_POLL: Duration = Duration::from_millis(25);
+
+/// Outcome of bounding one child's lifetime.
+#[derive(Debug)]
+enum ExecWait {
+    Exited(std::process::ExitStatus),
+    /// Deadline hit; the child was killed and reaped.
+    TimedOut,
+}
+
+/// Wait for `child` until `deadline`, then kill and reap it. Std-only:
+/// polls `try_wait` at `poll` intervals so a fast exit returns promptly.
+fn wait_bounded(child: &mut Child, deadline: Instant, poll: Duration) -> std::io::Result<ExecWait> {
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(ExecWait::Exited(status)),
+            None => {
+                if Instant::now() >= deadline {
+                    // Kill failure is unreachable for a live child; the
+                    // subsequent wait surfaces anything real.
+                    let _ = child.kill();
+                    child.wait()?;
+                    return Ok(ExecWait::TimedOut);
+                }
+                std::thread::sleep(poll);
+            }
+        }
+    }
+}
+
 fn run_exec(
     cmd: &str,
     keep: &[String],
@@ -693,6 +728,19 @@ fn run_exec(
         buf
     });
 
+    // Bound the child's lifetime: the MCP stdio server is single-threaded,
+    // so a hung command would deadlock every later request (and block a CLI
+    // caller indefinitely). The watcher kills at the deadline; both exit and
+    // kill close the pipes, releasing the reads below.
+    let (status_tx, status_rx) = std::sync::mpsc::channel();
+    let deadline = Instant::now() + EXEC_TIMEOUT;
+    let watcher = std::thread::spawn(move || {
+        let mut child = child;
+        if let Ok(outcome) = wait_bounded(&mut child, deadline, EXEC_TIMEOUT_POLL) {
+            let _ = status_tx.send(outcome);
+        }
+    });
+
     let mut stdout_reader = std::io::BufReader::new(stdout_pipe);
     let mut stdout_empty = true;
     let mut stdout_ends_with_nl = false;
@@ -728,11 +776,26 @@ fn run_exec(
             group(stats.compressed_tokens),
         )
     });
-    let code = exit_code(
-        &child
-            .wait()
-            .map_err(|e| ExitError::new(1, format!("failed to wait for `{cmd}`: {e}")))?,
-    );
+    // The watcher resolves before the pipes close (exit or kill), so this
+    // recv never outlasts the reads above.
+    let outcome = status_rx
+        .recv()
+        .map_err(|_| ExitError::new(1, format!("failed while watching `{cmd}`")))?;
+    if watcher.join().is_err() {
+        return Err(ExitError::new(1, format!("failed while watching `{cmd}`")));
+    }
+    let code = match outcome {
+        ExecWait::Exited(status) => exit_code(&status),
+        ExecWait::TimedOut => {
+            return Err(ExitError::new(
+                1,
+                format!(
+                    "command `{cmd}` exceeded the {}s execution timeout and was killed",
+                    EXEC_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+    };
 
     if ctx.format == Format::Json {
         let mut payload = json!({
@@ -1084,4 +1147,58 @@ fn group(n: usize) -> String {
         out.push(*b as char);
     }
     out
+}
+
+#[cfg(test)]
+mod exec_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn fast_child_reports_exit_well_before_deadline() {
+        let started = Instant::now();
+        let mut child = StdCommand::new("true").spawn().expect("spawn true");
+        let outcome = wait_bounded(
+            &mut child,
+            started + Duration::from_millis(150),
+            Duration::from_millis(5),
+        )
+        .expect("wait succeeds");
+        assert!(matches!(outcome, ExecWait::Exited(_)), "{outcome:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn hung_child_is_killed_promptly_at_deadline() {
+        let started = Instant::now();
+        let mut child = StdCommand::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let outcome = wait_bounded(
+            &mut child,
+            started + Duration::from_millis(150),
+            Duration::from_millis(10),
+        )
+        .expect("wait succeeds");
+        assert!(matches!(outcome, ExecWait::TimedOut), "{outcome:?}");
+        // Kill must be prompt: well under the 30s the child would have run.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "kill took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn timeout_error_message_mentions_timeout() {
+        let err = ExitError::new(
+            1,
+            format!(
+                "command `sleep 60` exceeded the {}s execution timeout and was killed",
+                EXEC_TIMEOUT.as_secs()
+            ),
+        );
+        assert!(err.message.contains("timeout"), "{}", err.message);
+        assert_eq!(err.code, 1u8);
+    }
 }

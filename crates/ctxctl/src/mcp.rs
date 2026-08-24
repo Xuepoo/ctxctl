@@ -25,9 +25,15 @@ use crate::{Format, OutputCtx, SymbolKindArg, config::Config};
 const PROTOCOL_VERSION: &str = "2025-03-26";
 
 /// Run the stdio server until EOF. Config is loaded once up front, exactly
-/// like the CLI path (same precedence rules).
+/// like the CLI path (same precedence rules). The working directory at
+/// launch is pinned as the workspace root: every file-bearing tool argument
+/// is resolved against it and rejected if it escapes (the MCP surface
+/// serves remote agents, so its inputs are untrusted — the interactive CLI
+/// keeps unrestricted paths).
 pub fn run(config_path: Option<&Path>) -> Result<ExitCode, crate::ExitError> {
     let config = crate::config::load(config_path).map_err(|e| crate::ExitError::new(1, e))?;
+    let root = std::env::current_dir()
+        .map_err(|e| crate::ExitError::new(1, format!("cannot determine workspace root: {e}")))?;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -36,7 +42,7 @@ pub fn run(config_path: Option<&Path>) -> Result<ExitCode, crate::ExitError> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => handle(&msg, &config),
+            Ok(msg) => handle(&msg, &config, &root),
             Err(e) => Some(error_response(
                 &Value::Null,
                 -32700,
@@ -55,8 +61,9 @@ pub fn run(config_path: Option<&Path>) -> Result<ExitCode, crate::ExitError> {
 }
 
 /// Handle one incoming message. Returns `None` for notifications (no `id`)
-/// and messages without a method — they get no response.
-fn handle(msg: &Value, config: &Config) -> Option<Value> {
+/// and messages without a method — they get no response. `root` is the
+/// pinned workspace root every file argument is confined to.
+fn handle(msg: &Value, config: &Config, root: &Path) -> Option<Value> {
     // Notifications carry no id and get no response.
     let id = msg.get("id");
     if id.is_none() || id.is_some_and(Value::is_null) {
@@ -89,7 +96,7 @@ fn handle(msg: &Value, config: &Config) -> Option<Value> {
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            match call_tool(name, params.get("arguments"), config) {
+            match call_tool(name, params.get("arguments"), config, root) {
                 Ok(text) => success(
                     id,
                     json!({ "content": [ { "type": "text", "text": text } ] }),
@@ -316,7 +323,12 @@ fn validate_arguments(tool: &str, args: &Value) -> Result<(), String> {
 /// Execute one `tools/call`. Errors become `isError` results (never JSON-RPC
 /// errors): a failing tool call is still a valid conversation event for the
 /// agent.
-fn call_tool(name: &str, arguments: Option<&Value>, config: &Config) -> Result<String, String> {
+fn call_tool(
+    name: &str,
+    arguments: Option<&Value>,
+    config: &Config,
+    root: &Path,
+) -> Result<String, String> {
     let args = arguments
         .filter(|value| !value.is_null())
         .cloned()
@@ -331,7 +343,7 @@ fn call_tool(name: &str, arguments: Option<&Value>, config: &Config) -> Result<S
             collect: Some(&mut out),
             diagnostic: None,
         };
-        let status = run_tool(name, &args, &mut ctx, config)?;
+        let status = run_tool(name, &args, &mut ctx, config, root)?;
         (status, ctx.diagnostic.clone())
     };
     if out.is_empty() {
@@ -371,14 +383,15 @@ fn run_tool(
     args: &Value,
     ctx: &mut OutputCtx<'_>,
     config: &Config,
+    root: &Path,
 ) -> Result<Option<u8>, String> {
     let code = match name {
         "ctxctl_outline" => {
-            let file = require_path(args, "file")?;
+            let file = require_path(root, args, "file")?;
             crate::run_outline(&file, flag(args, "no_doc"), flag(args, "no_lines"), ctx, config)
         }
         "ctxctl_symbol" => {
-            let file = require_path(args, "file")?;
+            let file = require_path(root, args, "file")?;
             let symbol = require_str(args, "name")?;
             let kind = match args.get("kind").and_then(Value::as_str) {
                 Some(raw) => Some(parse_kind(raw).ok_or_else(|| {
@@ -399,12 +412,12 @@ fn run_tool(
             )
         }
         "ctxctl_read" => {
-            let file = require_path(args, "file")?;
+            let file = require_path(root, args, "file")?;
             let lines = require_str(args, "lines")?;
             crate::run_read(&file, lines, ctx)
         }
         "ctxctl_deps" => {
-            let file = require_path(args, "file")?;
+            let file = require_path(root, args, "file")?;
             crate::run_deps(&file, ctx, config)
         }
         "ctxctl_exec" => {
@@ -430,8 +443,52 @@ fn run_tool(
     Ok(exit_status(&code))
 }
 
-fn require_path(args: &Value, key: &str) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(require_str(args, key)?))
+/// Fetch a required file argument and confine it to `root`. The MCP surface
+/// serves remote agents, so `file` values are untrusted input.
+fn require_path(root: &Path, args: &Value, key: &str) -> Result<PathBuf, String> {
+    pinned_path(root, key, require_str(args, key)?)
+}
+
+/// Resolve one tool-provided path against the workspace root.
+///
+/// Rejected outright: absolute paths, any `..` that would climb above the
+/// root, and existing targets whose symlink resolution lands outside the
+/// root. Everything else is returned joined under `root` (not canonicalized,
+/// so handlers keep their own not-found diagnostics).
+fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
+    let escape = |detail: &str| {
+        format!("invalid argument `{key}`: {raw}: {detail}path escapes workspace root")
+    };
+    let candidate = Path::new(raw);
+    if candidate.is_absolute() {
+        return Err(escape("absolute paths are not allowed; "));
+    }
+    let mut normalized = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(escape(""));
+                }
+            }
+            // Prefix/RootDir cannot occur in a relative Unix path; reject
+            // defensively instead of silently stripping them.
+            _ => return Err(escape("unsupported absolute-like component; ")),
+        }
+    }
+    let joined = root.join(normalized);
+    // Symlink hardening: an in-root link must not point out of the tree.
+    // (Lexical containment above already rules out textual escapes; this
+    // catches links to existing outside targets.)
+    let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(resolved) = joined.canonicalize()
+        && !resolved.starts_with(&base)
+    {
+        return Err(escape("resolved symlink target is outside the workspace; "));
+    }
+    Ok(joined)
 }
 
 fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -471,22 +528,37 @@ fn parse_kind(raw: &str) -> Option<SymbolKindArg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn test_config() -> Config {
         crate::config::load(None).expect("default config loads")
     }
 
-    fn request(method: &str, params: Value) -> Value {
-        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+    /// Unique per-test workspace root (tests run in parallel).
+    fn test_root() -> PathBuf {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ctxctl-mcp-unit-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).expect("create workspace");
+        dir
     }
 
-    /// Write a unique temp file; returns its path.
-    fn temp_source(name: &str, body: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("ctxctl-mcp-test-{}-{name}", std::process::id()));
+    /// Write a fixture inside `root`; returns the relative name.
+    fn fixture(root: &Path, name: &str, body: &str) -> String {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture dirs");
+        }
         let mut file = std::fs::File::create(&path).expect("create temp file");
         file.write_all(body.as_bytes()).expect("write temp file");
-        path
+        name.to_string()
+    }
+
+    fn request(method: &str, params: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
     }
 
     #[test]
@@ -495,7 +567,7 @@ mod tests {
             "initialize",
             json!({ "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {} }),
         );
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(response["result"]["serverInfo"]["name"], "ctxctl");
         assert_eq!(response["id"], 1);
@@ -504,7 +576,7 @@ mod tests {
     #[test]
     fn notifications_get_no_response() {
         let msg = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert!(handle(&msg, &test_config()).is_none());
+        assert!(handle(&msg, &test_config(), &test_root()).is_none());
     }
 
     #[test]
@@ -512,7 +584,7 @@ mod tests {
         // An id-carrying message without a method must be answered, or a
         // client would block forever waiting for its response.
         let msg = json!({ "jsonrpc": "2.0", "id": 9 });
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["error"]["code"], -32600);
         assert_eq!(response["id"], 9);
     }
@@ -520,14 +592,14 @@ mod tests {
     #[test]
     fn unknown_method_is_method_not_found() {
         let msg = request("no/such/method", json!({}));
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["error"]["code"], -32601);
     }
 
     #[test]
     fn tools_list_exposes_five_tools() {
         let msg = request("tools/list", json!({}));
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         let tools = response["result"]["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools
             .iter()
@@ -554,30 +626,33 @@ mod tests {
 
     #[test]
     fn read_tool_returns_slice_text() {
-        let path = temp_source("read.rs", "fn one() {}\nfn two() {}\n");
+        let root = test_root();
+        let name = fixture(&root, "read.rs", "fn one() {}\nfn two() {}\n");
         let msg = request(
             "tools/call",
             json!({ "name": "ctxctl_read", "arguments": {
-                "file": path.display().to_string(), "lines": "1-1" } }),
+                "file": name, "lines": "1-1" } }),
         );
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &root).expect("a response");
         let text = response["result"]["content"][0]["text"]
             .as_str()
             .expect("text content");
         assert!(text.contains("fn one()"), "{text}");
         assert!(!text.contains("fn two"), "{text}");
         assert!(response["result"]["isError"].is_null());
-        std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn missing_file_becomes_is_error_result() {
+        // Relative and in-workspace, so the failure is the handler's
+        // not-found path rather than the workspace pin.
         let msg = request(
             "tools/call",
             json!({ "name": "ctxctl_read", "arguments": {
-                "file": "/nonexistent/ctxctl/mcp/test.rs", "lines": "1-2" } }),
+                "file": "nonexistent/ctxctl/test.rs", "lines": "1-2" } }),
         );
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"]
             .as_str()
@@ -588,7 +663,7 @@ mod tests {
     #[test]
     fn unknown_tool_is_is_error_result() {
         let msg = request("tools/call", json!({ "name": "nope" }));
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["result"]["isError"], true);
     }
 
@@ -598,7 +673,7 @@ mod tests {
             "tools/call",
             json!({ "name": "ctxctl_exec", "arguments": { "cmd": "false" } }),
         );
-        let response = handle(&msg, &test_config()).expect("a response");
+        let response = handle(&msg, &test_config(), &test_root()).expect("a response");
         assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"]
             .as_str()
@@ -609,5 +684,68 @@ mod tests {
             text.starts_with("tool ctxctl_exec failed with exit code 1\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn absolute_file_arg_is_rejected_before_any_read() {
+        let root = test_root();
+        for raw in ["/etc/passwd", "/"] {
+            let msg = request(
+                "tools/call",
+                json!({ "name": "ctxctl_read", "arguments": { "file": raw, "lines": "1-1" } }),
+            );
+            let response = handle(&msg, &test_config(), &root).expect("a response");
+            assert_eq!(response["result"]["isError"], true, "{raw}");
+            let text = response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text content");
+            assert!(text.contains("path escapes workspace root"), "{text}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn traversal_file_arg_is_rejected() {
+        let root = test_root();
+        for raw in ["../outside.txt", "sub/../../outside.txt", ".."] {
+            let msg = request(
+                "tools/call",
+                json!({ "name": "ctxctl_deps", "arguments": { "file": raw } }),
+            );
+            let response = handle(&msg, &test_config(), &root).expect("a response");
+            assert_eq!(response["result"]["isError"], true, "{raw}");
+            let text = response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text content");
+            assert!(text.contains(raw), "{text}");
+            assert!(text.contains("path escapes workspace root"), "{text}");
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_escape_is_rejected() {
+        let root = test_root();
+        let outside =
+            std::env::temp_dir().join(format!("ctxctl-mcp-unit-outside-{}", std::process::id()));
+        std::fs::write(&outside, "secret\n").expect("write outside file");
+        std::os::unix::fs::symlink(&outside, root.join("link.txt")).expect("create link");
+        let msg = request(
+            "tools/call",
+            json!({ "name": "ctxctl_read", "arguments": { "file": "link.txt", "lines": "1-1" } }),
+        );
+        let response = handle(&msg, &test_config(), &root).expect("a response");
+        std::fs::remove_file(&outside).ok();
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        assert!(
+            text.contains("resolved symlink target is outside the workspace"),
+            "{text}"
+        );
+        assert!(!text.contains("secret"), "content must not leak: {text}");
     }
 }
