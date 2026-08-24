@@ -257,9 +257,8 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
     }
     out.push_str(indent);
     out.push_str(parsed.language.comment_prefix());
-    out.push_str(" ... [");
-    out.push_str(&omitted.to_string());
-    out.push_str(" lines omitted]");
+    out.push(' ');
+    out.push_str(&omit_marker(omitted));
     let closer = parsed.language.comment_close();
     if !closer.is_empty() {
         out.push(' ');
@@ -282,6 +281,15 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
 /// endings so CRLF sources stay CRLF throughout (byte-stable output).
 fn emit_newline(text: &str) -> &'static str {
     if text.contains("\r\n") { "\r\n" } else { "\n" }
+}
+
+/// Fold marker for `n` omitted lines, singular-correct (`[1 line omitted]`).
+fn omit_marker(n: usize) -> String {
+    if n == 1 {
+        "... [1 line omitted]".to_string()
+    } else {
+        format!("... [{n} lines omitted]")
+    }
 }
 
 /// The foldable body node of a definition: the `body` field of the
@@ -436,9 +444,8 @@ fn fold_at_body_node(
         out.push_str(nl);
         out.push_str(indent);
         out.push_str(parsed.language.comment_prefix());
-        out.push_str(" ... [");
-        out.push_str(&omitted.to_string());
-        out.push_str(" lines omitted]");
+        out.push(' ');
+        out.push_str(&omit_marker(omitted));
         if keep_tail {
             out.push_str(nl);
             out.push_str(tail);
@@ -472,9 +479,8 @@ fn fold_at_body_node(
     out.push_str(nl);
     out.push_str(indent);
     out.push_str(parsed.language.comment_prefix());
-    out.push_str(" ... [");
-    out.push_str(&omitted.to_string());
-    out.push_str(" lines omitted]");
+    out.push(' ');
+    out.push_str(&omit_marker(omitted));
     let closer = parsed.language.comment_close();
     if !closer.is_empty() {
         out.push(' ');
@@ -643,12 +649,16 @@ fn boundary_continues(
         return false;
     }
     let prev = prev.trim_end();
-    let mut tokens = [
+    // Inside a preprocessor directive a trailing `\` splices the next line —
+    // the directive's own business, never a fold-blocking continuation.
+    const CONTINUATION_TOKENS: [char; 15] = [
         '+', '-', '*', '/', '%', '=', '(', '[', ',', '&', '|', '~', '^', '<', '\\',
     ];
-    if in_preproc {
-        tokens[14] = '\0';
-    }
+    let tokens: &[char] = if in_preproc {
+        &CONTINUATION_TOKENS[..CONTINUATION_TOKENS.len() - 1]
+    } else {
+        &CONTINUATION_TOKENS
+    };
     if prev.ends_with(tokens) {
         return true;
     }

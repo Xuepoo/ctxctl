@@ -56,19 +56,6 @@ impl Language for LuaLang {
             .map(|s| s.trim().to_string())
     }
 
-    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String {
-        let start = node.start_byte();
-        let text = source
-            .get(start..node.end_byte().min(source.len()))
-            .unwrap_or("…");
-        let line = text.split('\n').next().unwrap_or("").trim();
-        if line.is_empty() {
-            "…".to_string()
-        } else {
-            line.to_string()
-        }
-    }
-
     fn has_doc_comment(&self, _node: &tree_sitter::Node) -> bool {
         true
     }
@@ -111,12 +98,5 @@ fn string_value(node: tree_sitter::Node, source: &str) -> Option<String> {
     {
         return Some(text.trim().to_string());
     }
-    let text = node.utf8_text(source.as_bytes()).ok()?.trim();
-    let unquoted = text.strip_prefix(['\'', '"'])?;
-    Some(
-        unquoted
-            .strip_suffix(['\'', '"'])
-            .unwrap_or(unquoted)
-            .to_string(),
-    )
+    crate::lang::util::string_value(node, source)
 }

@@ -556,3 +556,20 @@ fn stream_compressor_with_no_pushes_is_empty() {
     assert_eq!(result.stats.saved_percent, 0);
     assert!(!result.stats.compression_ineffective());
 }
+
+#[test]
+fn singular_omission_run_says_line_not_lines() {
+    // One line between the head and tail windows: the marker must read
+    // "[1 line omitted]", not "[1 lines omitted]".
+    let options = CompressOptions {
+        head_lines: 1,
+        tail_lines: 1,
+        collapse_threshold: 2,
+        ..opts()
+    };
+    let result = compress("a\nb\nc\n", &options).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&result.text),
+        "a\n... [1 line omitted]\nc"
+    );
+}

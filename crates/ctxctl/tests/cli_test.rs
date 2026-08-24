@@ -846,7 +846,7 @@ fn symbol_compact_prunes_body() {
         "signature kept: {text}"
     );
     assert!(
-        text.contains("// ... [1 lines omitted]"),
+        text.contains("// ... [1 line omitted]"),
         "no marker: {text}"
     );
     assert!(!text.contains("a + b"), "body must be folded: {text}");
@@ -2030,4 +2030,40 @@ fn deps_default_ignore_globs_do_not_taint_ancestor_dirs() {
         imports[0]["kind"], "local",
         "ancestor named target must not taint the import: {value}"
     );
+}
+
+#[test]
+fn exec_help_explains_single_quoted_argument() {
+    let output = run(&["exec", "--help"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("single quoted argument"),
+        "usage hint missing: {text}"
+    );
+    assert!(text.contains("ctxctl exec \"cargo test\""), "hint: {text}");
+}
+
+#[test]
+fn exec_bare_multiword_command_fails_with_hint() {
+    // `ctxctl exec cargo test` cannot work: the positional is a single
+    // quoted argument. Clap rejects it and points at `--help`, which
+    // carries the quoting requirement (see exec_help_explains_single_quoted_argument).
+    let output = run(&["exec", "cargo", "test"]);
+    assert_eq!(output.status.code(), Some(2));
+    let err = stderr(&output);
+    assert!(err.contains("unexpected argument"), "{err}");
+    assert!(err.contains("--help"), "{err}");
+}
+
+#[test]
+fn symbol_kind_help_lists_var_not_variable() {
+    let output = run(&["symbol", "--help"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("(class, method, var,"),
+        "kind help must list `var`: {text}"
+    );
+    assert!(!text.contains("variable"), "stale kind name: {text}");
 }

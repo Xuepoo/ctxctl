@@ -48,19 +48,6 @@ impl Language for MarkdownLang {
         Some(cleaned.to_string())
     }
 
-    /// The full heading line as written (`## Sub heading`).
-    fn signature(&self, node: &tree_sitter::Node, source: &str) -> String {
-        let text = source
-            .get(node.start_byte()..node.end_byte().min(source.len()))
-            .unwrap_or("…");
-        let line = text.split('\n').next().unwrap_or("").trim();
-        if line.is_empty() {
-            "…".to_string()
-        } else {
-            line.to_string()
-        }
-    }
-
     /// Extend the heading's range to its enclosing `section`, i.e. through
     /// the whole chapter including nested subsections.
     fn definition_byte_range(&self, node: &tree_sitter::Node) -> std::ops::Range<usize> {
