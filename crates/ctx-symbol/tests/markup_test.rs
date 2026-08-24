@@ -1,6 +1,6 @@
 //! Tests for the markup/document backends: HTML, CSS/SCSS, Markdown.
 
-use ctx_symbol::{extract_symbols, parse};
+use ctx_symbol::{compact_symbol, extract_symbols, parse, parse_error_count};
 use std::path::Path;
 
 fn kinds(path: &str, src: &str) -> Vec<(String, String, usize, usize)> {
@@ -116,6 +116,53 @@ fn markdown_section_slice_covers_chapter() {
     let slice = &parsed.source[configure.byte_range.clone()];
     assert!(slice.contains("## Configure"));
     assert!(slice.contains("Deep settings."));
+}
+
+#[test]
+fn markdown_leaf_section_compact_passes_prose_through() {
+    // A leaf section (no subheadings) must pass through compact unchanged:
+    // its `#` heading is markdown syntax, not a C preprocessor directive,
+    // so the macro fold branch must never fire on it.
+    let src = "## Install\n\nRun the installer.\n\nThen configure it.\n";
+    let parsed = parse(Path::new("doc.md"), src).expect("parses");
+    let install = extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "Install")
+        .expect("Install present");
+    let raw = src[install.byte_range.clone()].to_string();
+    let compact = compact_symbol(&parsed, &install);
+    assert_eq!(
+        compact, raw,
+        "leaf section passes through unchanged: {compact:?}"
+    );
+    assert!(
+        !compact.contains("lines omitted]"),
+        "no bare fold marker: {compact:?}"
+    );
+    assert!(compact.contains("Run the installer."), "prose kept");
+    // The compact view is still valid markdown.
+    let reparsed = parse(Path::new("doc.md"), &compact).unwrap();
+    assert_eq!(
+        parse_error_count(&reparsed),
+        0,
+        "compact re-parses: {compact:?}"
+    );
+}
+
+#[test]
+fn markdown_parent_section_compact_passes_through() {
+    // Sections with subheadings already pass through; keep it that way so
+    // both shapes stay consistent.
+    let parsed = parse(Path::new("doc.md"), MD_SAMPLE).unwrap();
+    for name in ["Getting started", "Configure"] {
+        let sym = extract_symbols(&parsed)
+            .into_iter()
+            .find(|s| s.name == name)
+            .expect("section present");
+        let raw = MD_SAMPLE[sym.byte_range.clone()].to_string();
+        let compact = compact_symbol(&parsed, &sym);
+        assert_eq!(compact, raw, "{name} passes through unchanged: {compact:?}");
+    }
 }
 
 #[test]

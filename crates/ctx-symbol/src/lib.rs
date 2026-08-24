@@ -69,13 +69,15 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         return text.to_string();
     }
     // Absolute byte offsets of each line's start in `parsed.source` (lines
-    // are slices of the symbol range).
+    // are slices of the symbol range). Derived from the actual slice
+    // positions so `\r\n` terminators keep their two-byte stride — assuming
+    // one byte per terminator would drift every mask by one byte per CR.
     let sym_start = symbol.byte_range.start;
     let mut line_starts = Vec::with_capacity(lines.len());
     let mut off = 0usize;
-    for line in &lines {
+    for chunk in text.split_inclusive('\n') {
         line_starts.push(off);
-        off += line.len() + 1;
+        off += chunk.len();
     }
     // AST context for this symbol: comment ranges (masked from the lexical
     // scans below) and, for backends that provide it, the body's start line.
@@ -139,8 +141,12 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
             Some(i) => i + 1,
             // A macro folds after its first line only when the name lives on
             // that line (`#define FOO(x) \`); `#define \` defers the name to
-            // the next line and must stay intact.
-            None if lines[0].trim_start().starts_with('#') => {
+            // the next line and must stay intact. Gated behind an explicit
+            // preprocessor opt-in: `#` opens markdown headings and script
+            // comments elsewhere, which must pass through unfolded.
+            None if parsed.language.has_preprocessor()
+                && lines[0].trim_start().starts_with('#') =>
+            {
                 let rest = lines[0].trim_start();
                 let rest = rest.trim_start_matches('#').trim_start();
                 let rest = rest.strip_prefix("define").unwrap_or(rest);
@@ -180,7 +186,7 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         }
         open_parens[i] = balance.max(0) as usize;
     }
-    let in_preproc = lines[0].trim_start().starts_with('#');
+    let in_preproc = parsed.language.has_preprocessor() && lines[0].trim_start().starts_with('#');
     while fold_at < lines.len()
         && (boundary_continues(
             lines[fold_at - 1],
@@ -243,10 +249,11 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         return text.to_string();
     }
     let indent = leading_whitespace(rest[0]);
+    let nl = emit_newline(text);
     let mut out = String::new();
     for line in &lines[..fold_at] {
         out.push_str(line);
-        out.push('\n');
+        out.push_str(nl);
     }
     out.push_str(indent);
     out.push_str(parsed.language.comment_prefix());
@@ -259,16 +266,22 @@ pub fn compact_symbol(parsed: &ParsedSource, symbol: &Symbol) -> String {
         out.push_str(closer);
     }
     if keep_last {
-        out.push('\n');
+        out.push_str(nl);
         out.push_str(last);
     }
     // Always end on a newline: without one, a trailing `\` continuation
     // (C/C++ preprocessor macros) splices the final line into the directive
     // at EOF and the fragment no longer re-parses.
     if !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(nl);
     }
     out
+}
+
+/// Newline used when emitting folded output: match the input's own line
+/// endings so CRLF sources stay CRLF throughout (byte-stable output).
+fn emit_newline(text: &str) -> &'static str {
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 /// The foldable body node of a definition: the `body` field of the
@@ -399,7 +412,7 @@ fn fold_at_body_node(
                 tail_end = sym_end + lead + 1;
             }
         }
-        let tail = source[closer_line_start..tail_end].trim_end_matches('\n');
+        let tail = source[closer_line_start..tail_end].trim_end_matches(['\r', '\n']);
         let tail_first = tail.lines().next().unwrap_or("");
         if !is_closer(tail_first) {
             return None; // inline `}` in minified source
@@ -416,19 +429,22 @@ fn fold_at_body_node(
             return None;
         }
         let indent = leading_whitespace(middle.lines().next().unwrap_or(""));
-        let mut out = String::from(header);
-        out.push('\n');
+        let nl = emit_newline(&source[sym_start..sym_end]);
+        // The header slice keeps its own `\r` on CRLF sources; normalize it
+        // so every emitted terminator comes from `nl`.
+        let mut out = String::from(header.strip_suffix('\r').unwrap_or(header));
+        out.push_str(nl);
         out.push_str(indent);
         out.push_str(parsed.language.comment_prefix());
         out.push_str(" ... [");
         out.push_str(&omitted.to_string());
         out.push_str(" lines omitted]");
         if keep_tail {
-            out.push('\n');
+            out.push_str(nl);
             out.push_str(tail);
         }
         if !out.ends_with('\n') {
-            out.push('\n');
+            out.push_str(nl);
         }
         return Some(out);
     }
@@ -442,7 +458,7 @@ fn fold_at_body_node(
         Some(nl) if !header_src[nl + 1..].trim().is_empty() => return None,
         Some(nl) => header_src[..nl].trim_end(),
     };
-    let body_region = source[body_start..sym_end].trim_end_matches('\n');
+    let body_region = source[body_start..sym_end].trim_end_matches(['\r', '\n']);
     let body_lines: Vec<&str> = body_region.lines().collect();
     let last = body_lines.last().copied().unwrap_or("");
     let keep_closer = is_end_closer(last.trim());
@@ -451,8 +467,9 @@ fn fold_at_body_node(
         return None;
     }
     let indent = leading_whitespace(body_lines[0]);
+    let nl = emit_newline(&source[sym_start..sym_end]);
     let mut out = String::from(header);
-    out.push('\n');
+    out.push_str(nl);
     out.push_str(indent);
     out.push_str(parsed.language.comment_prefix());
     out.push_str(" ... [");
@@ -464,11 +481,11 @@ fn fold_at_body_node(
         out.push_str(closer);
     }
     if keep_closer {
-        out.push('\n');
+        out.push_str(nl);
         out.push_str(last);
     }
     if !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(nl);
     }
     Some(out)
 }

@@ -28,6 +28,10 @@ impl Language for CLang {
         ]
     }
 
+    fn has_preprocessor(&self) -> bool {
+        true
+    }
+
     fn definition_node_types(&self) -> &[(&'static str, SymbolKind)] {
         &[
             ("function_definition", SymbolKind::Function),

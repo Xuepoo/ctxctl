@@ -27,6 +27,7 @@ impl Language for RustLang {
         &[
             ("function_item", SymbolKind::Function),
             ("struct_item", SymbolKind::Struct),
+            ("union_item", SymbolKind::Struct),
             ("enum_item", SymbolKind::Enum),
             ("trait_item", SymbolKind::Trait),
             ("mod_item", SymbolKind::Module),
