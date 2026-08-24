@@ -473,3 +473,86 @@ fn passthrough_is_not_flagged_as_ineffective() {
     assert_eq!(result.stats.saved_percent, 0);
     assert!(!result.stats.compression_ineffective());
 }
+
+// --- Edge pins: degenerate shapes (CTX-0040) ---------------------------------
+
+/// Small output without a trailing newline passes through byte-verbatim:
+/// no terminator may be added or stripped.
+#[test]
+fn passthrough_without_trailing_newline_is_byte_verbatim() {
+    for input in ["a", "a\nb", "plain line", "l1\nl2\nl3"] {
+        let batch = compress(input, &opts()).unwrap();
+        assert_eq!(batch.text, input.as_bytes(), "{input:?}");
+        assert_eq!(batch.stats.total_lines, input.lines().count());
+        assert!(!batch.stats.collapsed);
+        let streamed = stream_bytes(input.as_bytes(), &opts());
+        assert_eq!(streamed.text, input.as_bytes(), "stream parity: {input:?}");
+        assert_eq!(streamed.stats, batch.stats);
+    }
+}
+
+#[test]
+fn single_non_critical_line_passes_through_without_newline() {
+    // Complements `single_line_output_is_kept_as_is` (which uses a critical
+    // line): an uninteresting single line is equally untouchable, newline
+    // or not.
+    for input in ["just noise", "just noise\n"] {
+        let result = compress(input, &opts()).unwrap();
+        assert_eq!(result.text, input.as_bytes());
+        assert_eq!(result.stats.total_lines, 1);
+        assert_eq!(result.stats.kept_lines, 1);
+    }
+}
+
+/// The collapse boundary is exact: `threshold` lines pass through, and one
+/// more line folds. Default threshold is 20 (head 5 + tail 5).
+#[test]
+fn exactly_collapse_threshold_lines_pass_through() {
+    let options = opts();
+    let at = lines(options.collapse_threshold, "l");
+    let result = compress(&at, &options).unwrap();
+    assert_eq!(result.text, at.as_bytes());
+    assert!(!result.stats.collapsed, "{:?}", result.stats);
+    assert_eq!(result.stats.omitted_lines, 0);
+}
+
+#[test]
+fn collapse_threshold_minus_one_lines_pass_through() {
+    let options = opts();
+    let under = lines(options.collapse_threshold - 1, "l");
+    let result = compress(&under, &options).unwrap();
+    assert_eq!(result.text, under.as_bytes());
+    assert!(!result.stats.collapsed);
+}
+
+#[test]
+fn collapse_threshold_plus_one_lines_fold() {
+    let options = opts();
+    let n = options.collapse_threshold + 1;
+    let over = format!("{}\n", lines(n, "l"));
+    let result = compress(&over, &options).unwrap();
+    assert!(result.stats.collapsed, "{:?}", result.stats);
+    // head 5 + tail 5 kept, the middle folds into one marker.
+    assert_eq!(
+        result.stats.omitted_lines,
+        n - DEFAULT_HEAD_LINES - DEFAULT_TAIL_LINES
+    );
+    let text = String::from_utf8_lossy(&result.text);
+    assert!(text.starts_with("l1\nl2\nl3\nl4\nl5\n... [11 lines omitted]"));
+    assert!(text.ends_with("\nl17\nl18\nl19\nl20\nl21"));
+    // One line past the threshold must actually save something.
+    assert!(result.stats.saved_percent > 0);
+}
+
+/// A stream that is closed without ever pushing anything behaves like empty
+/// output: empty text, zeroed stats, no ineffective flag.
+#[test]
+fn stream_compressor_with_no_pushes_is_empty() {
+    let sc = StreamCompressor::new(&opts()).unwrap();
+    let result = sc.finish();
+    assert!(result.text.is_empty());
+    assert_eq!(result.stats.total_lines, 0);
+    assert_eq!(result.stats.kept_lines, 0);
+    assert_eq!(result.stats.saved_percent, 0);
+    assert!(!result.stats.compression_ineffective());
+}

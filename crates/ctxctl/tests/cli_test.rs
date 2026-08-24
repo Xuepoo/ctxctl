@@ -1113,6 +1113,32 @@ fn exec_merges_stderr_without_blank_line_gap() {
 }
 
 #[test]
+fn exec_stderr_only_output_is_compressed_and_reported() {
+    // A command that writes nothing to stdout still gets the full wiring:
+    // merged stderr content is compressed, savings are reported, and the
+    // child's exit code propagates (CTX-0040).
+    let output = run(&["exec", "sh -c 'echo warning: only-stderr >&2'"]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("$ sh"), "command not echoed: {text}");
+    let text = body(&output);
+    assert!(
+        text.contains("warning: only-stderr"),
+        "payload lost: {text:?}"
+    );
+    assert!(text.contains("Saved ~"), "no savings line: {text}");
+
+    let failing = run(&["exec", "--json", "sh -c 'echo fatal: bad >&2; exit 7'"]);
+    assert_eq!(failing.status.code(), Some(7), "exit code must propagate");
+    let value: Value = serde_json::from_str(&stdout(&failing)).expect("valid json");
+    assert_eq!(value["exit_code"], 7);
+    assert!(
+        value["compressed"].as_str().unwrap().contains("fatal: bad"),
+        "stderr payload in json envelope: {value}"
+    );
+}
+
+#[test]
 fn exec_keeps_rustc_location_after_error_header() {
     // rustc prints `   --> file:line:col` right under each diagnostic;
     // compression must not drop it or wedge an omit marker between.
