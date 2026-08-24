@@ -1748,3 +1748,96 @@ fn symlinked_project_config_is_followed() {
         stdout(&output)
     );
 }
+
+// --- Input-file guardrails (CTX-0035) ---------------------------------------
+// Every file-arg command must refuse non-regular files (a FIFO or char device
+// hangs or exhausts memory on read) and oversized files (arbitrary tokenization
+// cost) before touching the contents.
+
+#[test]
+fn directory_arg_is_rejected_as_not_a_regular_file() {
+    let dir = tmp_dir("guardrail-dir");
+    let d = dir.to_str().unwrap();
+    for args in [
+        vec!["outline", d],
+        vec!["symbol", d, "--name", "add"],
+        vec!["read", d, "--lines", "1-2"],
+        vec!["deps", d],
+    ] {
+        let output = run(&args);
+        assert_ne!(
+            output.status.code(),
+            Some(0),
+            "{:?} must fail on a directory",
+            args
+        );
+        let err = stderr(&output);
+        assert!(err.contains(d), "must name the file: {err}");
+        assert!(
+            err.contains("not a regular file"),
+            "must give reason: {err}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn character_device_arg_is_rejected_as_not_a_regular_file() {
+    // /dev/null reads back empty (and /dev/zero would hang or exhaust
+    // memory); only the metadata guard can reject a device file.
+    let output = run(&["outline", "/dev/null"]);
+    assert_ne!(output.status.code(), Some(0));
+    let err = stderr(&output);
+    assert!(err.contains("/dev/null"), "must name the file: {err}");
+    assert!(
+        err.contains("not a regular file"),
+        "must give reason: {err}"
+    );
+}
+
+#[test]
+fn oversized_file_error_states_size_and_limit() {
+    let dir = tmp_dir("guardrail-size");
+    let file = dir.join("big.rs");
+    let size = 21;
+    std::fs::write(&file, "a".repeat(size)).expect("write oversized fixture");
+    // Keep the cap tiny so CI never allocates real oversized fixtures.
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[limits]\nmax_file_bytes = 10\n").expect("write config");
+    let output = run(&[
+        "outline",
+        "--config",
+        config.to_str().unwrap(),
+        file.to_str().unwrap(),
+    ]);
+    assert_ne!(output.status.code(), Some(0));
+    let err = stderr(&output);
+    assert!(err.contains("21"), "must state the actual size: {err}");
+    assert!(err.contains("10"), "must state the limit: {err}");
+    assert!(err.contains("max_file_bytes"), "must name the knob: {err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_to_regular_source_is_accepted() {
+    use std::os::unix::fs::symlink;
+
+    let link = tmp_dir("guardrail-symlink").join("linked.rs");
+    symlink(FIXTURE, &link).expect("link fixture");
+    let output = run(&["outline", link.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("symbols"),
+        "unexpected: {output:?}"
+    );
+}
+
+#[test]
+fn small_file_stays_under_configured_limit() {
+    let dir = tmp_dir("guardrail-ok");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[limits]\nmax_file_bytes = 1048576\n").expect("write config");
+    let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("symbols"));
+}
