@@ -23,9 +23,12 @@ pub enum DepKind {
     /// Target matches a `[paths] ignore` glob.
     Ignored,
     /// Bare target with conflicting local evidence: files matching it sit
-    /// beside the analyzed file while nothing resolves at the project root
-    /// (e.g. an `os.py` shadowing the stdlib module). Emitted instead of
-    /// guessing a side.
+    /// beside the analyzed file while nothing resolves at a project root
+    /// distinct from that directory — either beside it inside a repository
+    /// or in the degenerate no-`.git` case, where the fallback root is the
+    /// analyzed file's own directory and any hit is just a same-dir
+    /// namesake (e.g. an `os.py` shadowing the stdlib module). Emitted
+    /// instead of guessing a side.
     Unresolved,
 }
 
@@ -72,7 +75,7 @@ fn classify(
     local_mods: &HashSet<String>,
 ) -> DepKind {
     let file_dir = canonical_dir(file_dir);
-    let root = project_root(&file_dir);
+    let (root, rooted) = project_root(&file_dir);
     if imp.relative {
         // Rust in-crate paths are always local (no dir-walking involved).
         if language == "rust" {
@@ -109,11 +112,21 @@ fn classify(
     }
     if matches!(language, "python" | "go" | "java" | "csharp") {
         let candidates = existence_candidates(language, &imp.target);
-        // A bare target is local only when it resolves deterministically at
-        // the project root (module layouts root there). Files merely sitting
-        // next to the analyzed file are ambiguous — they may shadow a
-        // well-known module — so they yield Unresolved, never a guess.
-        if candidates.iter().any(|c| root.join(c).exists()) {
+        // Two-tier rule for bare targets, anchored at deterministic roots:
+        //
+        // 1. Inside a repository (`.git` ancestor found): a hit at the root
+        //    is decisive — module layouts root there — so it is Local.
+        //    Files merely sitting next to the analyzed file are ambiguous
+        //    (they may shadow a well-known module) and yield Unresolved,
+        //    never a guess.
+        // 2. Degenerate standalone case (no `.git` ancestor): the fallback
+        //    root equals the analyzed file's own directory, so a hit there
+        //    is just a same-dir namesake — never evidence of locality.
+        //    Such shadows yield Unresolved too.
+        //
+        // Explicit relative imports above bypass both tiers: their target
+        // path is visible from the file itself, so they remain Local.
+        if rooted && candidates.iter().any(|c| root.join(c).exists()) {
             return DepKind::Local;
         }
         if candidates.iter().any(|c| file_dir.join(c).exists()) {
@@ -182,17 +195,19 @@ fn canonical_dir(dir: &Path) -> PathBuf {
 }
 
 /// Anchoring root for probes and ignore scoping: the nearest ancestor of
-/// `start` (inclusive) containing a `.git` entry; `start` itself when not
-/// inside a repository. Derived purely from the file location.
-fn project_root(start: &Path) -> PathBuf {
+/// `start` (inclusive) containing a `.git` entry. Without any such ancestor,
+/// `start` itself acts as the root (standalone-file usage stays supported)
+/// and the returned flag is `false`; classification treats that degenerate
+/// case as "no project root distinct from the analyzed file's directory".
+fn project_root(start: &Path) -> (PathBuf, bool) {
     let mut current = start;
     loop {
         if current.join(".git").exists() {
-            return current.to_path_buf();
+            return (current.to_path_buf(), true);
         }
         match current.parent() {
             Some(parent) => current = parent,
-            None => return start.to_path_buf(),
+            None => return (start.to_path_buf(), false),
         }
     }
 }
