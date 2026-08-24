@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [0.3.3] - 2026-08-24
+
+### Changed
+
+- **Self-healing symbol lookup errors** — `mcp` symbol calls on a missing
+  name now return up to five ranked suggestions (exact prefix, then
+  substring, then edit distance ≤ 2, case-insensitive, ties alphabetical)
+  plus an embedded mini-outline of top-level symbols, so an agent recovers
+  in one round-trip instead of failing.
+- **Range-parse errors state accepted formats** — invalid `lines` input now
+  names the expected forms (`N`, `N-M`, `N-`) instead of a bare failure.
+
 ## [0.3.2] - 2026-08-24
 
 ### Fixed
