@@ -1447,18 +1447,23 @@ fn xdg_config_new_keys_parse() {
 }
 
 #[test]
-fn unknown_config_key_is_an_error() {
-    let root = tmp_dir("xdg-unknown-key");
-    let xdg = root.join("ctxctl");
-    std::fs::create_dir_all(&xdg).expect("create xdg dir");
-    std::fs::write(xdg.join("config.toml"), "[exec]\nhead_line = 3\n").expect("write xdg config");
-    let mut cmd = Command::new(BIN);
-    cmd.env("XDG_CONFIG_HOME", &root).args(["outline", FIXTURE]);
-    let output = cmd.output().expect("run ctxctl");
-    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+fn unknown_key_in_project_config_warns_and_succeeds() {
+    // CTX-0038: a bad key in a traversal-discovered layer is a parse error
+    // like any other — skipped with a warning, never fatal.
+    let root = tmp_dir("project-unknown-key");
+    let project = root.join("proj");
+    std::fs::create_dir_all(project.join(".ctxctl")).expect("create dirs");
+    std::fs::write(
+        project.join(".ctxctl/config.toml"),
+        "[exec]\nhead_line = 3\n",
+    )
+    .expect("write project config");
+    let output = run_in(&project, &["outline", FIXTURE]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     assert!(
-        stderr(&output).contains("head_line"),
-        "error must name the unknown key: {}",
+        stderr(&output).contains("ignoring invalid config")
+            && stderr(&output).contains("head_line"),
+        "warning must name the bad key: {}",
         stderr(&output)
     );
 }
@@ -2066,4 +2071,145 @@ fn symbol_kind_help_lists_var_not_variable() {
         "kind help must list `var`: {text}"
     );
     assert!(!text.contains("variable"), "stale kind name: {text}");
+}
+
+// ---------------------------------------------------------------------------
+// CTX-0038: unreadable auto-discovered configs are skipped with a warning.
+//
+// Discovered layers (XDG user config, project `.ctxctl/config.toml` found by
+// traversal) must not hard-fail every command: read/parse errors degrade to
+// ONE deterministic stderr warning and defaults apply. Only an explicitly
+// passed `--config` stays fatal. Kept as one contiguous block so concurrent
+// additions elsewhere in this file cannot textually overlap.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn broken_discovered_xdg_config_is_skipped_with_warning() {
+    let root = tmp_dir("xdg-broken");
+    let xdg = root.join("ctxctl");
+    std::fs::create_dir_all(&xdg).expect("create xdg dir");
+    std::fs::write(xdg.join("config.toml"), "not [valid toml").expect("write broken config");
+
+    let mut cmd = Command::new(BIN);
+    cmd.env("XDG_CONFIG_HOME", &root).args(["outline", FIXTURE]);
+    let output = cmd.output().expect("run ctxctl");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "broken discovered config must not fail the command: {}",
+        stderr(&output)
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains("ignoring invalid config"),
+        "warning must announce the skip: {err}"
+    );
+    assert!(
+        err.contains(xdg.join("config.toml").to_string_lossy().as_ref()),
+        "warning must name the offending file: {err}"
+    );
+
+    // Stdout must be identical to a run with no config layer at all.
+    let clean = Command::new(BIN)
+        .env("XDG_CONFIG_HOME", tmp_dir("xdg-broken-clean"))
+        .args(["outline", FIXTURE])
+        .output()
+        .expect("run ctxctl");
+    assert_eq!(stdout(&clean), stdout(&output), "defaults must apply");
+}
+
+#[test]
+fn broken_discovered_project_config_is_skipped_with_warning() {
+    let root = tmp_dir("project-broken");
+    let project = root.join("proj");
+    std::fs::create_dir_all(project.join(".ctxctl")).expect("create dirs");
+    std::fs::write(
+        project.join(".ctxctl/config.toml"),
+        "[exec\nhead_lines = oops\n",
+    )
+    .expect("write broken project config");
+
+    let output = run_in(&project, &["outline", FIXTURE]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "traversal-discovered broken config must not fail: {}",
+        stderr(&output)
+    );
+    let err = stderr(&output);
+    let broken = project
+        .join(".ctxctl/config.toml")
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        err.contains("ignoring invalid config") && err.contains(broken.as_str()),
+        "warning must name file and skip reason: {err}"
+    );
+}
+
+#[test]
+fn broken_explicit_config_still_fails_hard() {
+    // Pin: only DISCOVERED layers soften. The same broken content handed to
+    // --config keeps the fail-hard contract.
+    let dir = tmp_dir("explicit-broken");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "not [valid toml").expect("write broken config");
+
+    let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.contains("invalid config"), "hard error expected: {err}");
+    assert!(
+        !err.contains("ignoring"),
+        "explicit --config must never be skipped with a warning: {err}"
+    );
+}
+
+#[test]
+fn unknown_key_in_discovered_xdg_config_warns_and_succeeds() {
+    let root = tmp_dir("xdg-unknown-key-skip");
+    let xdg = root.join("ctxctl");
+    std::fs::create_dir_all(&xdg).expect("create xdg dir");
+    std::fs::write(xdg.join("config.toml"), "[exec]\nhead_line = 3\n").expect("write xdg config");
+
+    let mut cmd = Command::new(BIN);
+    cmd.env("XDG_CONFIG_HOME", &root).args(["outline", FIXTURE]);
+    let output = cmd.output().expect("run ctxctl");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "bad key in discovered layer must warn, not fail: {}",
+        stderr(&output)
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains("ignoring invalid config") && err.contains("head_line"),
+        "warning must name the bad key: {err}"
+    );
+
+    let clean = Command::new(BIN)
+        .env("XDG_CONFIG_HOME", tmp_dir("xdg-unknown-key-skip-clean"))
+        .args(["outline", FIXTURE])
+        .output()
+        .expect("run ctxctl");
+    assert_eq!(
+        stdout(&clean),
+        stdout(&output),
+        "skipped layer means full defaults"
+    );
+}
+
+#[test]
+fn unknown_key_via_explicit_config_still_fails_hard() {
+    let dir = tmp_dir("explicit-unknown-key");
+    let config = dir.join("config.toml");
+    std::fs::write(&config, "[exec]\nhead_line = 3\n").expect("write config");
+
+    let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("head_line") && !err.contains("ignoring invalid config"),
+        "explicit unknown key must stay fatal without skip wording: {err}"
+    );
 }

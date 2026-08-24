@@ -7,6 +7,10 @@
 //! Stateless by design: parsed per command, never cached. Project-level keys
 //! override global keys; undeclared keys fall back to global -> default.
 //! No array-concatenation semantics.
+//!
+//! Failure policy: only an explicit `--config` is fatal on read/parse errors.
+//! Discovered layers are best-effort — a broken file is skipped with one
+//! deterministic stderr warning so a stray config cannot break every command.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -179,12 +183,12 @@ pub fn load(explicit: Option<&Path>) -> Result<Config, String> {
     if let Some(global) = xdg_global_path()
         && global.is_file()
     {
-        merge_file(&mut config, &global)?;
+        merge_discovered(&mut config, &global);
     }
     if let Some(project) =
         discover_project_config(&std::env::current_dir().map_err(|e| e.to_string())?)
     {
-        merge_file(&mut config, &project)?;
+        merge_discovered(&mut config, &project);
     }
     if let Some(explicit) = explicit {
         merge_file(&mut config, explicit)?;
@@ -193,6 +197,8 @@ pub fn load(explicit: Option<&Path>) -> Result<Config, String> {
     Ok(config)
 }
 
+/// Merge an explicitly passed `--config` layer. Errors are fatal and keep
+/// their historical message wording byte-for-byte.
 fn merge_file(config: &mut Config, path: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read config {}: {e}", path.display()))?;
@@ -200,6 +206,27 @@ fn merge_file(config: &mut Config, path: &Path) -> Result<(), String> {
         toml::from_str(&text).map_err(|e| format!("invalid config {}: {e}", path.display()))?;
     partial.merge_into(config);
     Ok(())
+}
+
+/// Merge an auto-discovered layer (XDG global or project traversal). A file
+/// that cannot be read or parsed — including a bad key rejected by strict
+/// `deny_unknown_fields` — is skipped with ONE deterministic stderr warning;
+/// the command continues with defaults for that layer.
+fn merge_discovered(config: &mut Config, path: &Path) {
+    let parsed = std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|text| toml::from_str::<Partial>(&text).map_err(|e| e.to_string()));
+    match parsed {
+        Ok(partial) => partial.merge_into(config),
+        Err(reason) => {
+            // Collapse multi-line TOML error snippets into one stable line.
+            let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+            eprintln!(
+                "warning: ignoring invalid config at {}: {reason}",
+                path.display()
+            );
+        }
+    }
 }
 
 fn xdg_global_path() -> Option<PathBuf> {
