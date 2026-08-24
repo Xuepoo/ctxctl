@@ -272,8 +272,9 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
             *compact,
             lines.as_deref(),
             &mut ctx,
+            &config,
         ),
-        Command::Read { file, lines } => run_read(file, lines, &mut ctx),
+        Command::Read { file, lines } => run_read(file, lines, &mut ctx, &config),
         Command::Deps { file } => run_deps(file, &mut ctx, &config),
         Command::Exec {
             cmd,
@@ -313,7 +314,7 @@ fn run_outline(
     ctx: &mut OutputCtx,
     config: &Config,
 ) -> Result<ExitCode, ExitError> {
-    let source = read_source(path)?;
+    let source = read_source(path, config.limits.max_file_bytes)?;
     let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let symbols = ctx_symbol::extract_symbols(&parsed);
@@ -443,6 +444,7 @@ fn run_outline(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_symbol(
     path: &Path,
     name: &str,
@@ -451,8 +453,9 @@ fn run_symbol(
     compact: bool,
     subrange: Option<&str>,
     ctx: &mut OutputCtx,
+    config: &Config,
 ) -> Result<ExitCode, ExitError> {
-    let source = read_source(path)?;
+    let source = read_source(path, config.limits.max_file_bytes)?;
     let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let symbols = ctx_symbol::extract_symbols(&parsed);
@@ -530,8 +533,13 @@ fn run_symbol(
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_read(path: &Path, raw: &str, ctx: &mut OutputCtx) -> Result<ExitCode, ExitError> {
-    let source = read_source(path)?;
+fn run_read(
+    path: &Path,
+    raw: &str,
+    ctx: &mut OutputCtx,
+    config: &Config,
+) -> Result<ExitCode, ExitError> {
+    let source = read_source(path, config.limits.max_file_bytes)?;
     // Split on `\n` keeping the endings so CRLF slices stay verbatim
     // (byte-stability plus original line-ending fidelity).
     let file_lines: Vec<&str> = source.split_inclusive('\n').collect();
@@ -848,7 +856,7 @@ fn run_exec(
 }
 
 fn run_deps(path: &Path, ctx: &mut OutputCtx, config: &Config) -> Result<ExitCode, ExitError> {
-    let source = read_source(path)?;
+    let source = read_source(path, config.limits.max_file_bytes)?;
     let (parsed, file_tokens) = parse_and_tokens(path, &source, ctx.show_saved)?;
     let file_tokens = file_tokens.unwrap_or(0);
     let imports = ctx_symbol::extract_imports(&parsed);
@@ -939,9 +947,68 @@ fn exit_code(status: &std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-fn read_source(path: &Path) -> Result<String, ExitError> {
+/// Read an input file behind two guardrails: the path must be a regular
+/// file (`fs::metadata` follows symlinks, so linked sources stay valid) and
+/// its size must not exceed `[limits] max_file_bytes`. Without the type
+/// check a FIFO blocks forever or a char device like `/dev/zero` streams
+/// until memory dies; without the size check every command reads and
+/// tokenizes arbitrarily large files.
+fn read_source(path: &Path, max_file_bytes: usize) -> Result<String, ExitError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| ExitError::new(1, format!("failed to read {}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(ExitError::new(
+            1,
+            format!(
+                "{}: not a regular file ({})",
+                path.display(),
+                non_regular_kind(&meta)
+            ),
+        ));
+    }
+    let len = meta.len();
+    if len > max_file_bytes as u64 {
+        return Err(ExitError::new(
+            1,
+            format!(
+                "{}: file is {} bytes, exceeding max_file_bytes limit of {} bytes",
+                path.display(),
+                len,
+                max_file_bytes
+            ),
+        ));
+    }
     std::fs::read_to_string(path)
         .map_err(|e| ExitError::new(1, format!("failed to read {}: {e}", path.display())))
+}
+
+/// Human-readable reason why a stat-ed path is not a regular file.
+fn non_regular_kind(meta: &std::fs::Metadata) -> &'static str {
+    if meta.is_dir() {
+        return "directory";
+    }
+    special_file_kind(&meta.file_type())
+}
+
+#[cfg(unix)]
+fn special_file_kind(ft: &std::fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if ft.is_fifo() {
+        "FIFO"
+    } else if ft.is_char_device() {
+        "character device"
+    } else if ft.is_block_device() {
+        "block device"
+    } else if ft.is_socket() {
+        "socket"
+    } else {
+        "special file"
+    }
+}
+
+#[cfg(not(unix))]
+fn special_file_kind(_ft: &std::fs::FileType) -> &'static str {
+    "special file"
 }
 
 /// Parse the source and, in parallel, compute its cl100k token count when

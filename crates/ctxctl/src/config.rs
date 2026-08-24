@@ -17,6 +17,10 @@ pub const DEFAULT_FOLD_THRESHOLD: usize = 50;
 /// Default `[paths]` ignore globs (cli-contract.md §7).
 pub const DEFAULT_IGNORE_GLOBS: &[&str] = &["node_modules", "target", "dist", ".git"];
 
+/// Default `[limits] max_file_bytes`: input files larger than this are
+/// refused before being read or tokenized (10 MiB).
+pub const DEFAULT_MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
+
 /// Fully resolved configuration, key by key.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -24,6 +28,7 @@ pub struct Config {
     pub outline: OutlineConfig,
     pub paths: PathsConfig,
     pub general: GeneralConfig,
+    pub limits: LimitsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +59,13 @@ pub struct GeneralConfig {
     pub show_saved: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct LimitsConfig {
+    /// Maximum accepted input-file size in bytes; larger files are refused
+    /// before read/tokenize.
+    pub max_file_bytes: usize,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -74,6 +86,9 @@ impl Default for Config {
                 ignore: DEFAULT_IGNORE_GLOBS.iter().map(|s| s.to_string()).collect(),
             },
             general: GeneralConfig { show_saved: true },
+            limits: LimitsConfig {
+                max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            },
         }
     }
 }
@@ -88,6 +103,7 @@ struct Partial {
     outline: PartialOutline,
     paths: PartialPaths,
     general: PartialGeneral,
+    limits: PartialLimits,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +134,12 @@ struct PartialGeneral {
     show_saved: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PartialLimits {
+    max_file_bytes: Option<usize>,
+}
+
 impl Partial {
     fn merge_into(self, config: &mut Config) {
         if let Some(keep) = self.exec.keep {
@@ -143,6 +165,9 @@ impl Partial {
         }
         if let Some(v) = self.general.show_saved {
             config.general.show_saved = v;
+        }
+        if let Some(v) = self.limits.max_file_bytes {
+            config.limits.max_file_bytes = v;
         }
     }
 }

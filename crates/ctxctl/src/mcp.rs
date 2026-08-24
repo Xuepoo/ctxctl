@@ -409,12 +409,13 @@ fn run_tool(
                 flag(args, "compact"),
                 args.get("lines").and_then(Value::as_str),
                 ctx,
+                config,
             )
         }
         "ctxctl_read" => {
             let file = require_path(root, args, "file")?;
             let lines = require_str(args, "lines")?;
-            crate::run_read(&file, lines, ctx)
+            crate::run_read(&file, lines, ctx, config)
         }
         "ctxctl_deps" => {
             let file = require_path(root, args, "file")?;
