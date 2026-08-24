@@ -457,12 +457,14 @@ fn require_path(root: &Path, args: &Value, key: &str) -> Result<PathBuf, String>
 /// root. Everything else is returned joined under `root` (not canonicalized,
 /// so handlers keep their own not-found diagnostics).
 fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
-    let escape = |detail: &str| {
+    // Inputs are passed explicitly rather than captured so static analysis
+    // credits every parameter read (code-scanning alert #2).
+    let escape = |key: &str, raw: &str, detail: &str| {
         format!("invalid argument `{key}`: {raw}: {detail}path escapes workspace root")
     };
     let candidate = Path::new(raw);
     if candidate.is_absolute() {
-        return Err(escape("absolute paths are not allowed; "));
+        return Err(escape(key, raw, "absolute paths are not allowed; "));
     }
     let mut normalized = PathBuf::new();
     for component in candidate.components() {
@@ -471,12 +473,12 @@ fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
                 if !normalized.pop() {
-                    return Err(escape(""));
+                    return Err(escape(key, raw, ""));
                 }
             }
             // Prefix/RootDir cannot occur in a relative Unix path; reject
             // defensively instead of silently stripping them.
-            _ => return Err(escape("unsupported absolute-like component; ")),
+            _ => return Err(escape(key, raw, "unsupported absolute-like component; ")),
         }
     }
     let joined = root.join(normalized);
@@ -487,7 +489,11 @@ fn pinned_path(root: &Path, key: &str, raw: &str) -> Result<PathBuf, String> {
     if let Ok(resolved) = joined.canonicalize()
         && !resolved.starts_with(&base)
     {
-        return Err(escape("resolved symlink target is outside the workspace; "));
+        return Err(escape(
+            key,
+            raw,
+            "resolved symlink target is outside the workspace; ",
+        ));
     }
     Ok(joined)
 }
@@ -721,6 +727,42 @@ mod tests {
             assert!(text.contains(raw), "{text}");
             assert!(text.contains("path escapes workspace root"), "{text}");
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pinned_path_error_strings_are_byte_stable() {
+        // Characterization pins: these exact bytes are API surface (MCP
+        // clients may match on them), so the error builder must never
+        // reword them.
+        let root = test_root();
+        assert_eq!(
+            pinned_path(&root, "file", "/etc/passwd"),
+            Err(
+                "invalid argument `file`: /etc/passwd: absolute paths are not allowed; path escapes workspace root"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            pinned_path(&root, "file", "../outside.txt"),
+            Err("invalid argument `file`: ../outside.txt: path escapes workspace root".to_string())
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pinned_path_rejects_drive_relative_component() {
+        // Prefix components cannot occur in relative Unix paths, so this
+        // builder branch only fires on Windows drive-relative input.
+        let root = test_root();
+        assert_eq!(
+            pinned_path(&root, "file", "C:outside.txt"),
+            Err(
+                "invalid argument `file`: C:outside.txt: unsupported absolute-like component; path escapes workspace root"
+                    .to_string()
+            )
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
