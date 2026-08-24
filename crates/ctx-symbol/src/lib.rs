@@ -526,16 +526,14 @@ fn advance_str_state(
 /// `block_comment`, `doc_comment`); the shared `contains("comment")` covers
 /// them. String-literal docstrings (python) are NOT comments.
 fn collect_comment_ranges(node: tree_sitter::Node, out: &mut Vec<Range<usize>>) {
-    if node.kind().contains("comment") {
-        out.push(node.byte_range());
-        return;
-    }
-    if node.child_count() > 0 {
-        let mut cursor = node.walk();
-        for kid in node.children(&mut cursor) {
-            collect_comment_ranges(kid, out);
+    crate::language::walk_preorder(node, |n| {
+        if n.kind().contains("comment") {
+            out.push(n.byte_range());
+            // comments are leaf tokens; never descend into them
+            return false;
         }
-    }
+        true
+    });
 }
 
 /// Chars of `line` (at absolute byte offset `abs_start` in the source) with
