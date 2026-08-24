@@ -381,6 +381,17 @@ fn rust_byte_range_slices_original_text() {
 }
 
 #[test]
+fn rust_extracts_unions() {
+    let src = "#[repr(C)]\npub union Value {\n    bits: u32,\n    float: f32,\n}\n\nfn read(v: &Value) -> u32 {\n    unsafe { v.bits }\n}\n";
+    let symbols = ctx_symbol::outline(src, rust_path()).unwrap();
+    let value = symbols
+        .iter()
+        .find(|s| s.name == "Value")
+        .expect("union extracted");
+    assert_eq!(value.kind, ctx_symbol::SymbolKind::Struct);
+}
+
+#[test]
 fn compact_is_smaller_and_parseable() {
     let parsed = ctx_symbol::parse(rust_path(), RUST_SAMPLE).unwrap();
     let symbols = ctx_symbol::extract_symbols(&parsed);
@@ -731,6 +742,92 @@ def foo(x):
     );
     let re = ctx_symbol::parse(py_path(), &compact).unwrap();
     assert!(!re.tree.root_node().has_error(), "reparse: {compact}");
+}
+
+#[test]
+fn compact_crlf_source_folds_with_stable_line_endings() {
+    // CRLF sources: line offsets must follow the real `\r\n` stride so
+    // comment/string masking stays aligned, and emitted fold markers keep
+    // the file's own line endings instead of mixing in bare `\n`.
+    let src = "#define LOG(tag, fmt, ...) \\\r\n  /* tag ( note */ \\\r\n  log_write(tag, fmt, ##__VA_ARGS__)\r\n\r\nint add(int a, int b)\r\n{\r\n  int x = a;\r\n  int y = a;\r\n  int z = a;\r\n  return x + y + z;\r\n}\r\n";
+    let parsed = ctx_symbol::parse(c_path(), src).unwrap();
+    let symbols = ctx_symbol::extract_symbols(&parsed);
+
+    // Heuristic path (`\`-continued macro, comment inside the body).
+    let log = symbols
+        .iter()
+        .find(|s| s.name == "LOG")
+        .expect("LOG extracted");
+    let compact = ctx_symbol::compact_symbol(&parsed, log);
+    assert!(
+        compact.starts_with("#define LOG(tag, fmt, ...)"),
+        "directive line kept: {compact:?}"
+    );
+    assert!(
+        compact.contains("// ... [1 lines omitted]"),
+        "macro folds, comment continuation kept: {compact:?}"
+    );
+    assert_eq!(
+        compact.matches('\n').count(),
+        compact.matches("\r\n").count(),
+        "macro output is CRLF-only: {compact:?}"
+    );
+
+    // AST path (brace body): markers keep CRLF too.
+    let add = symbols
+        .iter()
+        .find(|s| s.name == "add")
+        .expect("add extracted");
+    let compact = ctx_symbol::compact_symbol(&parsed, add);
+    assert!(compact.contains("// ... ["), "function folds: {compact:?}");
+    assert_eq!(
+        compact.matches('\n').count(),
+        compact.matches("\r\n").count(),
+        "function output is CRLF-only: {compact:?}"
+    );
+    assert!(
+        compact.trim_end().ends_with('}'),
+        "closer kept: {compact:?}"
+    );
+
+    // Both views re-parse as C and are byte-stable across calls.
+    for name in ["LOG", "add"] {
+        let sym = symbols.iter().find(|s| s.name == name).unwrap();
+        let compact = ctx_symbol::compact_symbol(&parsed, sym);
+        assert_eq!(
+            compact,
+            ctx_symbol::compact_symbol(&parsed, sym),
+            "{name} stable"
+        );
+        let re = ctx_symbol::parse(c_path(), &compact).unwrap();
+        assert!(!re.tree.root_node().has_error(), "{name}: {compact:?}");
+    }
+}
+
+#[test]
+fn compact_crlf_comment_masking_stays_aligned() {
+    // The `\r\n` stride: line-start offsets must track the real two-byte
+    // terminators. A one-byte-per-CR drift shifts every absolute mask by
+    // that many bytes, until the fold believes the closed comment still
+    // straddles the boundary and refuses to fold at all.
+    let src = "#define M(a) \\\r\n  /* open ( paren\r\n     inside */\\\r\n  w(a);\r\n";
+    let parsed = ctx_symbol::parse(c_path(), src).unwrap();
+    let m = ctx_symbol::extract_symbols(&parsed)
+        .into_iter()
+        .find(|s| s.name == "M")
+        .expect("M extracted");
+    let compact = ctx_symbol::compact_symbol(&parsed, &m);
+    assert!(
+        compact.contains("// ... [1 lines omitted]"),
+        "closed comment does not block the fold: {compact:?}"
+    );
+    assert_eq!(
+        compact.matches('\n').count(),
+        compact.matches("\r\n").count(),
+        "CRLF-only output: {compact:?}"
+    );
+    let re = ctx_symbol::parse(c_path(), &compact).unwrap();
+    assert!(!re.tree.root_node().has_error(), "{compact:?}");
 }
 
 #[test]

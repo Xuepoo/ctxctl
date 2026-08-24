@@ -88,6 +88,15 @@ pub trait Language: Send + Sync {
         true
     }
 
+    /// True if the language has a C-style preprocessor whose directives
+    /// start with `#` and splice continuation lines via `\`. Gates the
+    /// preprocessor macro fold branch in compact views: `#`-led lines in
+    /// other languages (markdown headings, script comments) are not
+    /// directives and must never fold as if they were.
+    fn has_preprocessor(&self) -> bool {
+        false
+    }
+
     /// Kinds of a definition's foldable body node (e.g. `block`,
     /// `compound_statement`, `field_declaration_list`). Used by the generic
     /// AST-anchored fold locator; empty means "no body nodes" and the fold
