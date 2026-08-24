@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use config::Config;
 use ctx_symbol::{ParsedSource, Symbol, SymbolKind};
 use serde_json::json;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::process::ExitCode;
@@ -288,18 +289,34 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
 /// confirmation goes to stderr); otherwise it is printed to stdout. The
 /// target receives exactly the stdout bytes.
 fn deliver(text: &str, ctx: &mut OutputCtx) -> Result<(), ExitError> {
+    deliver_bytes(text.as_bytes(), ctx)
+}
+
+/// Byte-exact variant of [`deliver`] for compressed command output:
+/// passthrough bytes reach the file/stdout targets verbatim. Only the
+/// `collect` buffer degrades non-UTF-8 output lossily, because MCP JSON
+/// text content must be valid UTF-8.
+fn deliver_bytes(bytes: &[u8], ctx: &mut OutputCtx) -> Result<(), ExitError> {
     if let Some(buf) = ctx.collect.as_deref_mut() {
-        buf.push_str(text);
+        buf.push_str(&String::from_utf8_lossy(bytes));
         return Ok(());
     }
     match ctx.output {
         Some(path) => {
-            std::fs::write(path, text).map_err(|e| {
+            std::fs::write(path, bytes).map_err(|e| {
                 ExitError::new(1, format!("failed to write {}: {e}", path.display()))
             })?;
             eprintln!("wrote {}", path.display());
         }
-        None => print!("{text}"),
+        None => {
+            let mut stdout = std::io::stdout();
+            stdout
+                .write_all(bytes)
+                .map_err(|e| ExitError::new(1, format!("failed to write stdout: {e}")))?;
+            stdout
+                .flush()
+                .map_err(|e| ExitError::new(1, format!("failed to flush stdout: {e}")))?;
+        }
     }
     Ok(())
 }
@@ -735,12 +752,14 @@ fn run_exec(
     );
 
     if ctx.format == Format::Json {
+        // JSON strings must be valid UTF-8, so compressed bytes degrade
+        // lossily only at this boundary.
         let mut payload = json!({
             "schema_version": 1,
             "tool": "exec",
             "cmd": cmd,
             "exit_code": code,
-            "compressed": result.text,
+            "compressed": String::from_utf8_lossy(&result.text),
         });
         if ctx.show_saved {
             payload["saved"] = json!({
@@ -756,18 +775,24 @@ fn run_exec(
         return Ok(ExitCode::from(code as u8));
     }
 
-    let mut out = format!("$ {cmd}\n");
+    // Text mode carries the compressed bytes verbatim (passthrough stays
+    // byte-exact on stdout and `--output`); only JSON/MCP degrade to lossy
+    // strings, where validity is required.
+    let mut out = format!("$ {cmd}\n").into_bytes();
     if !result.text.is_empty() {
-        out.push_str(&result.text);
-        out.push('\n');
+        out.extend_from_slice(&result.text);
+        out.push(b'\n');
     }
     if ctx.show_saved {
-        out.push_str(&format!(
-            "Saved ~{}% ({} -> {} tokens)\n",
-            stats.saved_percent,
-            group(stats.original_tokens),
-            group(stats.compressed_tokens),
-        ));
+        out.extend_from_slice(
+            format!(
+                "Saved ~{}% ({} -> {} tokens)\n",
+                stats.saved_percent,
+                group(stats.original_tokens),
+                group(stats.compressed_tokens),
+            )
+            .as_bytes(),
+        );
     }
     // Over-broad-keep notice routing: text mode keeps stdout pure machine
     // data and warns on stderr (like outline's parse-failure warning); JSON
@@ -775,12 +800,12 @@ fn run_exec(
     // stderr channel to the agent, so there it stays in-band.
     if let Some(warning) = &ineffective_warning {
         if ctx.collect.is_some() {
-            out.push_str(&format!("warning: {warning}\n"));
+            out.extend_from_slice(format!("warning: {warning}\n").as_bytes());
         } else {
             eprintln!("warning: {warning}");
         }
     }
-    deliver(&out, ctx)?;
+    deliver_bytes(&out, ctx)?;
     Ok(ExitCode::from(code as u8))
 }
 
