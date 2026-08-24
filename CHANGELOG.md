@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
+## [0.3.1] - 2026-08-24
+
+### Security
+
+- **`mcp` pins the workspace root and bounds `exec` children** — tool
+  calls resolve paths against the server's pinned workspace root instead
+  of the ambient process CWD, and spawned commands run under a
+  wall-clock timeout so a hung command can no longer wedge the stdio
+  loop.
+- **`exec` rejects unquoted shell metacharacters** — arguments carrying
+  shell metacharacters fail fast with a `sh -c` hint instead of reaching
+  a shell.
+
+### Fixed
+
+- **Symbol correctness pack** — AST walks are depth-bounded so deeply
+  nested code can no longer overflow the stack; the Markdown backend
+  gates its preprocessor fold; byte offsets are correct for CRLF input;
+  C/C++ unions report the new `union` kind.
+- **`deps` anchored to the project root** — import resolution starts at
+  the project root, ignore globs apply to relative paths only, and
+  unresolvable imports surface with an explicit unresolved kind.
+- **exec fidelity** — the pending fold buffer is bounded, passthrough
+  bytes are preserved verbatim, and the over-broad-keep warning fires
+  exactly when folding was ineffective; empty keep patterns are rejected
+  and options are validated before spawn.
+- **MCP contract parity** — non-zero exec exits surface as errors with
+  matching exit codes and tool arguments are validated before dispatch.
+- **Config tolerance** — unreadable configs discovered during lookup are
+  skipped with a warning instead of aborting.
+
+### Changed
+
+- **File guardrails** — inputs that are not regular files or exceed the
+  size limit are refused up front with a clear error.
+- Backend dedup polish: shared helpers consolidated, signature caps and
+  markers tightened, clap help strings aligned.
+
 ## [0.3.0] - 2026-08-23
 
 ### Added
