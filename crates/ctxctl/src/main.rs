@@ -1135,7 +1135,7 @@ fn parse_range(tok: &str) -> Result<(usize, usize), String> {
     };
     let start: usize = start_s
         .parse()
-        .map_err(|_| format!("invalid range `{tok}`"))?;
+        .map_err(|_| format!("invalid range `{tok}`: expected N, N-M, or N-"))?;
     if start == 0 {
         return Err("ranges are 1-based; start must be >= 1".to_string());
     }
@@ -1144,7 +1144,7 @@ fn parse_range(tok: &str) -> Result<(usize, usize), String> {
     } else {
         end_s
             .parse()
-            .map_err(|_| format!("invalid range `{tok}`"))?
+            .map_err(|_| format!("invalid range `{tok}`: expected N, N-M, or N-"))?
     };
     if start > end {
         return Err(format!("range {start}-{end} is inverted"));

@@ -656,6 +656,11 @@ fn mistyped_scalar_args_name_key_and_types() {
     );
 }
 
+/// The `suggestions: ...` line of an error message, if any.
+fn suggestions_line(text: &str) -> Option<&str> {
+    text.lines().find(|l| l.starts_with("suggestions: "))
+}
+
 #[test]
 fn symbol_not_found_error_suggests_similar_names() {
     let mut server = Server::spawn();
@@ -682,19 +687,129 @@ fn symbol_not_found_error_suggests_similar_names() {
     let text = result_text(&typo);
     assert_eq!(typo["result"]["isError"], true);
     assert!(
-        text.contains("symbol not found: nodehand; similar: NodeHandle"),
+        text.contains("symbol not found: nodehand\nsuggestions: NodeHandle"),
         "{text}"
     );
     let text = result_text(&broad);
-    assert!(
-        text.contains("similar: NodeHandle, NodeState") || text.contains("similar: NodeState"),
-        "substring matches included: {text}"
+    assert_eq!(
+        suggestions_line(text),
+        Some("suggestions: NodeHandle, NodeState, WrapNode"),
+        "prefix tier before substring tier: {text}"
     );
-    assert!(text.contains("WrapNode"), "{text}");
+    // A hopeless query gets no suggestions line, but the embedded
+    // mini-outline must still be present so the agent can self-heal.
     let text = result_text(&hopeless);
+    assert!(suggestions_line(text).is_none(), "{text}");
+    assert!(text.contains("\nfunction unrelated"), "{text}");
+}
+
+#[test]
+fn symbol_miss_ranks_prefix_then_substring_then_typo_and_caps_at_five() {
+    let mut server = Server::spawn();
+    server.fixture(
+        "ranked.rs",
+        "struct NodeConfig;\nstruct NodeData;\nstruct NodeState;\nstruct MyNodeState;\n\
+         struct WrapNodeData;\nfn unrelated() {}\n",
+    );
+    server.fixture(
+        "capped.rs",
+        "struct NodeA;\nstruct NodeB;\nstruct NodeC;\nstruct NodeD;\nstruct NodeE;\n\
+         struct NodeF;\nstruct NodeG;\n",
+    );
+    let tier_order = server.call(
+        60,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "ranked.rs", "name": "nodestate" }),
+    );
+    let typo_fix = server.call(
+        61,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "ranked.rs", "name": "nodedatax" }),
+    );
+    let capped = server.call(
+        62,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "capped.rs", "name": "node" }),
+    );
+    server.shutdown();
+    assert_eq!(
+        suggestions_line(result_text(&tier_order)),
+        Some("suggestions: NodeState, MyNodeState"),
+        "prefix match outranks substring despite alphabetical order: {}",
+        result_text(&tier_order)
+    );
+    assert_eq!(
+        suggestions_line(result_text(&typo_fix)),
+        Some("suggestions: NodeData"),
+        "levenshtein candidate without prefix or substring match: {}",
+        result_text(&typo_fix)
+    );
+    assert_eq!(
+        suggestions_line(result_text(&capped)),
+        Some("suggestions: NodeA, NodeB, NodeC, NodeD, NodeE"),
+        "alphabetical ties capped at five: {}",
+        result_text(&capped)
+    );
+}
+
+#[test]
+fn symbol_miss_embeds_capped_top_level_mini_outline() {
+    let mut server = Server::spawn();
+    let body: String = (0..23).map(|i| format!("struct Mini{i:02};\n")).collect();
+    server.fixture("many.rs", &body);
+    let miss = server.call(
+        63,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "many.rs", "name": "zzz" }),
+    );
+    server.shutdown();
+    let text = result_text(&miss);
+    assert_eq!(miss["result"]["isError"], true);
+    let mut expected: Vec<String> = vec!["symbol not found: zzz".to_string(), String::new()];
+    for i in 0..20 {
+        expected.push(format!("struct Mini{i:02}"));
+    }
+    expected.push("... and 3 more".to_string());
+    assert_eq!(text, expected.join("\n"));
+}
+
+#[test]
+fn symbol_miss_error_message_is_byte_stable_across_runs() {
+    let body = "struct Alpha;\nfn beta() {}\n";
+    let mut first = Server::spawn();
+    first.fixture("stable.rs", body);
+    let run_one = first.call(
+        70,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "stable.rs", "name": "alph" }),
+    );
+    first.shutdown();
+    let mut second = Server::spawn();
+    second.fixture("stable.rs", body);
+    let run_two = second.call(
+        71,
+        "ctxctl_symbol",
+        &serde_json::json!({ "file": "stable.rs", "name": "alph" }),
+    );
+    second.shutdown();
+    assert_eq!(result_text(&run_one), result_text(&run_two));
+}
+
+#[test]
+fn invalid_lines_range_error_teaches_expected_formats() {
+    let mut server = Server::spawn();
+    server.fixture("r.txt", "a\nb\nc\n");
+    let bad = server.call(
+        72,
+        "ctxctl_read",
+        &serde_json::json!({ "file": "r.txt", "lines": "abc" }),
+    );
+    server.shutdown();
+    let text = result_text(&bad);
+    assert_eq!(bad["result"]["isError"], true);
     assert!(
-        !text.contains("similar"),
-        "no suggestions must be silent: {text}"
+        text.contains("invalid range `abc`: expected N, N-M, or N-"),
+        "{text}"
     );
 }
 

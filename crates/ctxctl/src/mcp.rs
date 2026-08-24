@@ -469,7 +469,7 @@ fn run_tool(
                 ctx,
                 config,
             )
-            .map_err(|e| with_similar_symbols(&file, symbol, e))
+            .map_err(|e| with_self_healing_symbols(&file, symbol, config, e))
         }
         "ctxctl_read" => {
             let file = require_file(name, root, args)?;
@@ -648,51 +648,138 @@ fn lexically_normalized_absolute(path: &Path) -> Option<PathBuf> {
     Some(parts.into_iter().fold(anchor, |acc, part| acc.join(part)))
 }
 
-/// Suggest look-alike symbol names for a failed exact-match lookup: up to 3
-/// case-insensitive prefix-then-substring matches from the file's actual
-/// symbols. Best-effort — any read/parse failure yields no suggestions.
-fn similar_symbols(file: &Path, query: &str) -> Vec<String> {
-    let Ok(source) = std::fs::read_to_string(file) else {
-        return Vec::new();
-    };
-    let Ok(symbols) = ctx_symbol::outline(&source, file) else {
-        return Vec::new();
-    };
-    let query = query.to_lowercase();
-    let mut ranked: Vec<String> = Vec::new();
-    let mut push_unique = |candidates: Vec<String>| {
-        for name in candidates {
-            if !ranked.contains(&name) {
-                ranked.push(name);
-            }
-        }
-    };
-    let mut prefix_hits = Vec::new();
-    let mut substring_hits = Vec::new();
-    for symbol in symbols {
-        let name = symbol.name;
-        let lower = name.to_lowercase();
-        if lower.starts_with(&query) {
-            prefix_hits.push(name);
-        } else if lower.contains(&query) {
-            substring_hits.push(name);
-        }
-    }
-    push_unique(prefix_hits);
-    push_unique(substring_hits);
-    ranked.truncate(3);
-    ranked
+/// Maximum candidates returned by [`ranked_suggestions`].
+const SUGGESTION_LIMIT: usize = 5;
+/// Maximum lines rendered by [`mini_outline`].
+const MINI_OUTLINE_LIMIT: usize = 20;
+/// Levenshtein ceiling for typo-tier suggestions (early-exit beyond this).
+const TYPO_DISTANCE_MAX: usize = 2;
+
+/// Analyze `file` once so a miss can carry suggestions and a mini-outline.
+/// Best-effort — any read or parse failure yields `None` and the bare error
+/// stays untouched. Honors the configured file-size limit; only runs on the
+/// error path, never on successful lookups.
+fn analyze_file(file: &Path, config: &Config) -> Option<Vec<ctx_symbol::Symbol>> {
+    let source = crate::read_source(file, config.limits.max_file_bytes).ok()?;
+    ctx_symbol::outline(&source, file).ok()
 }
 
-/// Attach `; similar: A, B` to `symbol not found:` errors when the file has
-/// close names; all other errors pass through untouched.
-fn with_similar_symbols(file: &Path, query: &str, mut err: crate::ExitError) -> crate::ExitError {
-    if err.message.starts_with("symbol not found: ") {
-        let suggestions = similar_symbols(file, query);
-        if !suggestions.is_empty() {
-            err.message.push_str("; similar: ");
-            err.message.push_str(&suggestions.join(", "));
+/// Rank look-alike symbol names for a failed exact-match lookup. Each
+/// candidate scores in its best tier — case-insensitive prefix match, then
+/// case-insensitive substring match, then bounded Levenshtein distance
+/// <= 2 — ties are broken alphabetically, duplicates removed, capped at
+/// [`SUGGESTION_LIMIT`]. Deterministic by construction.
+fn ranked_suggestions(symbols: &[ctx_symbol::Symbol], query: &str) -> Vec<String> {
+    let query = query.to_lowercase();
+    let mut scored: Vec<(u8, String)> = Vec::new();
+    for symbol in symbols {
+        let lower = symbol.name.to_lowercase();
+        let tier = if lower.starts_with(&query) {
+            0
+        } else if lower.contains(&query) {
+            1
+        } else if bounded_levenshtein(&lower, &query, TYPO_DISTANCE_MAX).is_some() {
+            2
+        } else {
+            continue;
+        };
+        if !scored.iter().any(|(_, name)| name == &symbol.name) {
+            scored.push((tier, symbol.name.clone()));
         }
+    }
+    scored.sort_unstable(); // tier ascending, then name ascending
+    scored.truncate(SUGGESTION_LIMIT);
+    scored.into_iter().map(|(_, name)| name).collect()
+}
+
+/// Bounded Levenshtein edit distance: `Some(distance)` when it is within
+/// `max`, `None` as soon as the distance provably exceeds `max`. Time
+/// O(len_a * len_b), space O(len_b); each DP row aborts once its minimum
+/// exceeds `max`, and length differences beyond `max` skip entirely.
+fn bounded_levenshtein(a: &str, b: &str, max: usize) -> Option<usize> {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > max {
+        return None;
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current: Vec<usize> = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        let mut row_min = current[0];
+        for (j, cb) in b.iter().enumerate() {
+            let substitution_cost = usize::from(ca != cb);
+            let value = (previous[j] + substitution_cost)
+                .min(previous[j + 1] + 1)
+                .min(current[j] + 1);
+            current[j + 1] = value;
+            row_min = row_min.min(value);
+        }
+        if row_min > max {
+            return None;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    let distance = previous[b.len()];
+    (distance <= max).then_some(distance)
+}
+
+/// Render a capped outline of the file's top-level symbols (`kind name`
+/// lines sorted by byte position) so a missed lookup can recover without
+/// another round-trip. Nested definitions are skipped by walking the
+/// position-sorted symbols and dropping anything that starts inside an
+/// already-accepted span. Returns `None` when there is nothing to show;
+/// truncation is announced with `... and N more`.
+fn mini_outline(symbols: &[ctx_symbol::Symbol]) -> Option<String> {
+    let mut ordered: Vec<&ctx_symbol::Symbol> = symbols.iter().collect();
+    ordered.sort_by_key(|symbol| symbol.byte_range.start);
+    let mut top_level: Vec<&ctx_symbol::Symbol> = Vec::new();
+    let mut span_end = 0usize;
+    for symbol in ordered {
+        if symbol.byte_range.start >= span_end {
+            top_level.push(symbol);
+            span_end = symbol.byte_range.end;
+        }
+    }
+    let shown = MINI_OUTLINE_LIMIT.min(top_level.len());
+    if shown == 0 {
+        return None;
+    }
+    let mut block: Vec<String> = top_level[..shown]
+        .iter()
+        .map(|symbol| format!("{} {}", crate::kind_name(symbol.kind), symbol.name))
+        .collect();
+    if top_level.len() > shown {
+        block.push(format!("... and {} more", top_level.len() - shown));
+    }
+    Some(block.join("\n"))
+}
+
+/// Enrich `symbol not found:` errors for self-healing: a ranked suggestions
+/// line plus a blank-line-separated mini-outline of the file's top-level
+/// symbols. The first line is preserved verbatim; all other errors pass
+/// through untouched. Output depends only on file content and query, so the
+/// message is byte-stable.
+fn with_self_healing_symbols(
+    file: &Path,
+    query: &str,
+    config: &Config,
+    mut err: crate::ExitError,
+) -> crate::ExitError {
+    if !err.message.starts_with("symbol not found: ") {
+        return err;
+    }
+    let Some(symbols) = analyze_file(file, config) else {
+        return err;
+    };
+    let suggestions = ranked_suggestions(&symbols, query);
+    if !suggestions.is_empty() {
+        err.message.push_str("\nsuggestions: ");
+        err.message.push_str(&suggestions.join(", "));
+    }
+    if let Some(outline) = mini_outline(&symbols) {
+        err.message.push_str("\n\n");
+        err.message.push_str(&outline);
     }
     err
 }
@@ -1058,21 +1145,46 @@ mod tests {
     }
 
     #[test]
-    fn similar_symbols_rank_prefix_then_substring_and_cap_at_three() {
-        let root = test_root();
-        fixture(
-            &root,
-            "nodes.rs",
-            "struct NodeHandle;\nstruct NodeState;\nstruct NodeThingy;\nstruct WrapNode;\nfn unrelated() {}\n",
-        );
-        let file = root.join("nodes.rs");
+    fn ranked_suggestions_score_tier_then_name_and_cap_at_five() {
+        let source = "struct NodeHandle;\nstruct NodeState;\nstruct NodeThingy;\n\
+                      struct WrapNode;\nstruct MyNodeState;\nfn unrelated() {}\n";
+        let symbols =
+            ctx_symbol::outline(source, std::path::Path::new("nodes.rs")).expect("fixture parses");
+        // Prefix tier before substring tier regardless of alphabetical order.
         assert_eq!(
-            similar_symbols(&file, "node"),
-            vec!["NodeHandle", "NodeState", "NodeThingy"]
+            ranked_suggestions(&symbols, "nodestate"),
+            vec!["NodeState", "MyNodeState"]
         );
-        assert_eq!(similar_symbols(&file, "handle"), vec!["NodeHandle"]);
-        assert!(similar_symbols(&file, "zzz").is_empty());
-        std::fs::remove_dir_all(&root).ok();
+        // Substring-only hit.
+        assert_eq!(ranked_suggestions(&symbols, "handl"), vec!["NodeHandle"]);
+        // Typo candidate via bounded Levenshtein without any textual match.
+        assert_eq!(
+            ranked_suggestions(&symbols, "nodethingy1"),
+            vec!["NodeThingy"]
+        );
+        // Beyond distance 2: silent.
+        assert!(ranked_suggestions(&symbols, "zzz").is_empty());
+    }
+
+    #[test]
+    fn mini_outline_lists_top_level_symbols_and_caps_at_twenty() {
+        let mut source = String::new();
+        for i in 0..25 {
+            source.push_str(&format!("struct Top{i:02};\n"));
+        }
+        source.push_str("impl Wrapper {\n    fn inner_method(&self) {}\n}\n");
+        let symbols =
+            ctx_symbol::outline(&source, std::path::Path::new("tops.rs")).expect("fixture parses");
+        let outline = mini_outline(&symbols).expect("non-empty outline");
+        let lines: Vec<&str> = outline.lines().collect();
+        assert_eq!(lines.len(), 21);
+        assert_eq!(lines[0], "struct Top00");
+        assert_eq!(lines[19], "struct Top19");
+        assert_eq!(lines[20], "... and 6 more");
+        assert!(
+            !outline.contains("inner_method"),
+            "nested symbols stay hidden"
+        );
     }
 
     #[cfg(windows)]
