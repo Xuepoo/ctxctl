@@ -7,8 +7,21 @@
 //! marker: `... [N lines omitted]`.
 //!
 //! Matching is rule-driven with the `regex` crate — the same engine ripgrep
-//! uses — so patterns follow rg's default regex syntax (case-insensitive by
-//! default, matching rg's default behavior).
+//! uses. Patterns are matched case-insensitively regardless of their own
+//! case (this does not follow rg's case-sensitive default); write an inline
+//! `(?-i)` in a pattern to opt back into case sensitivity for it.
+//!
+//! Byte fidelity: outputs at or below the collapse threshold pass through
+//! byte-for-byte — [`CompressResult::text`] carries raw bytes and invalid
+//! UTF-8 survives untouched. The compression path renders lines through a
+//! lossy UTF-8 conversion (invalid sequences become U+FFFD) by declaration.
+//!
+//! Memory bound: an unterminated line buffers up to
+//! [`PENDING_BUDGET_BYTES`] bytes while waiting for its terminator.
+//! Beyond that, the buffered head of the line is emitted as its own line
+//! followed by the deterministic [`TRUNCATION_MARKER`] line, and the rest
+//! of that one line is discarded until its terminator arrives; later lines
+//! are processed normally. Deterministic: same input -> same output.
 //!
 //! Byte-stable by design: output is a pure function of the input text and the
 //! options. No timestamps, no counters, no environment dependence.
@@ -34,11 +47,24 @@ pub const IMPLICIT_KEEP_PATTERNS: &[&str] = &["^\\s+-->"];
 
 /// A folded result that saved less than this many percent is flagged by
 /// [`CompressStats::compression_ineffective`] — typically an over-broad
-/// keep-pattern set matching most of the output.
+/// keep-pattern set matching most of the output. Collapses where only the
+/// head/tail windows kept lines (no pattern contributed) are not flagged.
 pub const INEFFECTIVE_SAVED_PERCENT_MAX: u32 = 10;
 
 /// Outputs at or below this many lines are passed through uncompressed.
 pub const DEFAULT_COLLAPSE_THRESHOLD: usize = 20;
+
+/// Maximum bytes buffered while waiting for a line terminator. An
+/// unterminated line longer than this is deterministically truncated: the
+/// first [`PENDING_BUDGET_BYTES`] bytes are emitted as a line, followed by
+/// the [`TRUNCATION_MARKER`] line, and the remainder of that line (up to
+/// its terminator) is discarded.
+pub const PENDING_BUDGET_BYTES: usize = 1024 * 1024;
+
+/// Marker line announcing a truncated over-long line. The stated byte
+/// count mirrors [`PENDING_BUDGET_BYTES`]; keep the two in sync. The
+/// trailing newline is added when the marker is emitted.
+pub const TRUNCATION_MARKER: &str = "... [line truncated at 1048576 bytes]";
 
 /// Errors produced by the compression engine.
 #[derive(Debug, thiserror::Error)]
@@ -88,22 +114,35 @@ pub struct CompressStats {
     /// True when the fold path ran (output exceeded the collapse threshold);
     /// false for passthrough results.
     pub collapsed: bool,
+    /// Lines kept because a keep/location pattern matched them outside the
+    /// fixed head/tail windows. Zero means the collapse was window-only.
+    /// Internal diagnostic; not serialized.
+    #[serde(skip)]
+    pub pattern_kept_lines: usize,
 }
 
 impl CompressStats {
-    /// True when compression ran but saved at most
-    /// [`INEFFECTIVE_SAVED_PERCENT_MAX`] percent — the signature of an
-    /// over-broad keep-pattern set matching most of the output. Passthrough
-    /// results are never flagged.
+    /// True when compression ran, keep patterns actually pulled lines out
+    /// of the fold beyond the head/tail windows, and the savings stayed at
+    /// or below [`INEFFECTIVE_SAVED_PERCENT_MAX`] — the signature of an
+    /// over-broad keep-pattern set matching most of the output.
+    /// Window-only collapses (nothing matched) and passthrough results are
+    /// never flagged.
     pub fn compression_ineffective(&self) -> bool {
-        self.collapsed && self.saved_percent <= INEFFECTIVE_SAVED_PERCENT_MAX
+        self.collapsed
+            && self.pattern_kept_lines > 0
+            && self.saved_percent <= INEFFECTIVE_SAVED_PERCENT_MAX
     }
 }
 
-/// The result of a compression pass: the rendered text plus its statistics.
+/// The result of a compression pass: the rendered bytes plus statistics.
+///
+/// `text` carries raw output bytes. On the passthrough path they are the
+/// input verbatim (invalid UTF-8 included); on the compression path they
+/// are valid UTF-8 rendered lossily, by declaration.
 #[derive(Debug, Clone)]
 pub struct CompressResult {
-    pub text: String,
+    pub text: Vec<u8>,
     pub stats: CompressStats,
 }
 
@@ -121,10 +160,11 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// Compress command output.
 ///
 /// Outputs with at most `options.collapse_threshold` lines pass through
-/// unchanged. Otherwise kept lines are: the head summary, the tail summary,
-/// and every line matching a default keep pattern or a user `--keep` pattern.
-/// Omitted runs between kept lines fold into a single `... [N lines omitted]`
-/// marker.
+/// byte-for-byte (invalid UTF-8 included; see the module docs for the
+/// over-long-line truncation contract). Otherwise kept lines are: the head
+/// summary, the tail summary, and every line matching a default keep
+/// pattern or a user `--keep` pattern. Omitted runs between kept lines fold
+/// into a single `... [N lines omitted]` marker.
 ///
 /// This is the one-shot entry point; it feeds the whole text through a
 /// [`StreamCompressor`], so both paths render byte-identical output.
@@ -136,10 +176,10 @@ pub fn compress(output: &str, options: &CompressOptions) -> Result<CompressResul
 
 /// Streaming compressor: feed raw output bytes incrementally (as a command
 /// produces them) and render the same compressed view as [`compress`] on
-/// finish. Memory stays bounded by the head/tail windows and the lines that
-/// match keep patterns — the mass of uninteresting middle lines is only
-/// counted, never stored, so a command emitting gigabytes cannot exhaust
-/// memory.
+/// finish. Memory stays bounded by the head/tail windows, the lines that
+/// match keep patterns, and the [`PENDING_BUDGET_BYTES`] pending-line
+/// budget — the mass of uninteresting middle lines is only counted, never
+/// stored, so a command emitting gigabytes cannot exhaust memory.
 ///
 /// Deterministic: for a given byte stream and options, [`StreamCompressor::finish`]
 /// always returns the same result, byte-stable with [`compress`].
@@ -165,8 +205,12 @@ pub struct StreamCompressor {
     prefix: Vec<u8>,
     /// Number of complete lines buffered in `prefix`.
     prefix_lines: usize,
-    /// Bytes of the current (unterminated) line.
+    /// Bytes of the current (unterminated) line, bounded by
+    /// [`PENDING_BUDGET_BYTES`] via deterministic truncation.
     pending: Vec<u8>,
+    /// Set while discarding the remainder of a truncated over-long line,
+    /// up to and including its terminator search (terminator excluded).
+    dropping_line_rest: bool,
 }
 
 impl StreamCompressor {
@@ -186,21 +230,68 @@ impl StreamCompressor {
             prefix: Vec::new(),
             prefix_lines: 0,
             pending: Vec::new(),
+            dropping_line_rest: false,
         })
     }
 
     /// Feed a chunk of raw output bytes. Chunks may split lines anywhere.
+    ///
+    /// Complete lines are extracted with a forward-moving scan offset (each
+    /// byte is examined once per push) and drained once, so a push carrying
+    /// many lines costs one pass and one memmove — not one per line. If the
+    /// retained unterminated tail exceeds [`PENDING_BUDGET_BYTES`], the
+    /// deterministic truncation policy kicks in (module docs).
     pub fn push(&mut self, bytes: &[u8]) {
-        self.pending.extend_from_slice(bytes);
-        while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
-            let chunk: Vec<u8> = self.pending.drain(..=pos).collect();
-            let mut line = chunk.as_slice();
-            line = &line[..line.len() - 1]; // strip '\n'
+        let mut rest = bytes;
+        // Discard the remainder of a previously truncated line up to its
+        // terminator, then resume normal processing after it.
+        if self.dropping_line_rest {
+            match rest.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    self.dropping_line_rest = false;
+                    rest = &rest[pos + 1..];
+                }
+                None => return,
+            }
+        }
+        if rest.is_empty() {
+            return;
+        }
+        self.pending.extend_from_slice(rest);
+        let mut scan = 0usize;
+        let mut scratch: Vec<u8> = Vec::new();
+        while let Some(rel) = self.pending[scan..].iter().position(|&b| b == b'\n') {
+            let nl = scan + rel;
+            scratch.clear();
+            scratch.extend_from_slice(&self.pending[scan..=nl]);
+            scan = nl + 1;
+            let mut line = &scratch[..scratch.len() - 1]; // strip '\n'
             if line.last() == Some(&b'\r') {
                 line = &line[..line.len() - 1];
             }
-            self.consume(chunk.as_slice(), line);
+            self.consume(&scratch, line);
         }
+        if scan > 0 {
+            self.pending.drain(..scan);
+        }
+        if self.pending.len() > PENDING_BUDGET_BYTES {
+            self.truncate_pending_line();
+        }
+    }
+
+    /// Enforce the pending budget for an over-long unterminated line: emit
+    /// exactly the first [`PENDING_BUDGET_BYTES`] bytes as a line, then the
+    /// deterministic [`TRUNCATION_MARKER`] line, and drop the rest of that
+    /// line until its terminator arrives. The truncation point is fixed,
+    /// so the result does not depend on chunk boundaries.
+    fn truncate_pending_line(&mut self) {
+        self.pending.truncate(PENDING_BUDGET_BYTES);
+        let capped = std::mem::take(&mut self.pending);
+        self.consume(&capped, &capped);
+        let mut chunk = TRUNCATION_MARKER.as_bytes().to_vec();
+        chunk.push(b'\n');
+        self.consume(&chunk, TRUNCATION_MARKER.as_bytes());
+        self.dropping_line_rest = true;
     }
 
     /// Render the final compressed view and statistics.
@@ -212,10 +303,13 @@ impl StreamCompressor {
             self.consume(&chunk, &chunk);
         }
         if self.total <= self.collapse_threshold {
-            let text = String::from_utf8_lossy(&self.prefix).into_owned();
-            let tokens = estimate_tokens(&text);
+            // Passthrough: the buffered prefix is written back verbatim,
+            // raw bytes included (module docs). Token estimation still
+            // works on the lossy rendering; savings are approximate by
+            // contract and zero here anyway.
+            let tokens = estimate_tokens(&String::from_utf8_lossy(&self.prefix));
             return CompressResult {
-                text,
+                text: std::mem::take(&mut self.prefix),
                 stats: CompressStats {
                     total_lines: self.total,
                     kept_lines: self.total,
@@ -224,9 +318,11 @@ impl StreamCompressor {
                     compressed_tokens: tokens,
                     saved_percent: 0,
                     collapsed: false,
+                    pattern_kept_lines: 0,
                 },
             };
         }
+        let pattern_kept_lines = self.kept_mid.len();
         let kept_lines = self.head.len() + self.kept_mid.len() + self.ring.len();
         let mut out = String::new();
         let mut first = true;
@@ -267,7 +363,7 @@ impl StreamCompressor {
         }
         let compressed_tokens = estimate_tokens(&out);
         CompressResult {
-            text: out,
+            text: out.into_bytes(),
             stats: CompressStats {
                 total_lines: self.total,
                 kept_lines,
@@ -276,6 +372,7 @@ impl StreamCompressor {
                 compressed_tokens,
                 saved_percent: saved_pct(self.raw_tokens, compressed_tokens),
                 collapsed: true,
+                pattern_kept_lines,
             },
         }
     }
