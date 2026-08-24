@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
-## [Unreleased]
+## [0.3.2] - 2026-08-24
 
 ### Fixed
 
@@ -13,6 +13,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   so folded CSS rule sets keep a parseable `}` closer. Corpus re-parse
   regressions on `/usr/include`, `/usr/lib/go/src`, and `/usr/lib/python3.14`
   (55,498 files, 1,879,020 raw-parse-ok slices): 458 → 0.
+- **`deps` sibling shadows in degenerate roots** — when no `.git` ancestor
+  exists anywhere above the analyzed file, the fallback project root equals
+  the file's own directory, so a same-directory namesake of a bare import is
+  now classified `Unresolved` instead of guessed `Local`. Explicit relative
+  imports stay `Local`; trees rooted by a `.git` ancestor are unchanged.
+
+### Changed
+
+- **`mcp` tool ergonomics aligned with real agent call patterns** —
+  absolute paths under the pinned workspace root are now accepted; read
+  `lines` is optional (omitted or empty returns the whole file); numeric
+  arguments coerce to their decimal string form; teaching errors guide
+  recovery: unknown tools enumerate the registry, missing required
+  arguments append usage hints, unknown arguments list valid keys, and
+  not-found symbols suggest up to three similar names from the file.
 
 ## [0.3.1] - 2026-08-24
 
