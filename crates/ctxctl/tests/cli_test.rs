@@ -350,8 +350,11 @@ fn java_outline_symbol_and_deps_local_probe() {
     assert!(stdout(&sym).contains("Math.sqrt"));
 
     // com.example.util.Helper resolves under the analyzed file's project
-    // root (anchored probe), independent of the process cwd.
+    // root (anchored probe), independent of the process cwd. The `.git`
+    // marker makes that root explicit: without it the tree is degenerate
+    // and same-dir hits are unresolved by design.
     let proj = tmp_dir("java-local-probe");
+    std::fs::create_dir_all(proj.join(".git")).expect("git marker");
     std::fs::copy(JAVA_FIXTURE, proj.join("Sample.java")).expect("copy fixture");
     std::fs::create_dir_all(proj.join("com/example/util")).expect("create dirs");
     std::fs::write(
@@ -797,8 +800,11 @@ fn symbol_subrange_out_of_bounds_exits_2() {
 
 #[test]
 fn csharp_deps_local_probe() {
-    // Demo.Utils resolves under the analyzed file's project root, not the cwd.
+    // Demo.Utils resolves under the analyzed file's project root, not the
+    // cwd. The `.git` marker anchors that root; without it the tree is
+    // degenerate and same-dir hits are unresolved by design.
     let proj = tmp_dir("csharp-local-probe");
+    std::fs::create_dir_all(proj.join(".git")).expect("git marker");
     std::fs::copy(DEPS_CS, proj.join("Deps.cs")).expect("copy fixture");
     std::fs::create_dir_all(proj.join("Demo/Utils")).expect("create dirs");
     std::fs::write(
@@ -1605,10 +1611,13 @@ fn deps_python_relative_imports_honor_ignore() {
 #[test]
 fn deps_go_local_via_project_root_probe() {
     let proj = tmp_dir("deps-go-local");
+    std::fs::create_dir_all(proj.join(".git")).expect("git marker");
     std::fs::create_dir_all(proj.join("localpkg/helper")).expect("create dir");
     std::fs::write(proj.join("localpkg/helper/help.go"), "package helper\n").expect("write file");
     // The analyzed file lives inside the project so the probe anchors at the
-    // file's project root, never at the cwd.
+    // file's project root, never at the cwd. The `.git` marker makes that
+    // root explicit: without it the tree is degenerate and same-dir hits
+    // are unresolved by design.
     let source = std::fs::read_to_string(DEPS_GO).expect("read go fixture");
     std::fs::write(proj.join("main.go"), source).expect("write main.go");
     let fixture = proj.join("main.go");
@@ -1993,6 +2002,83 @@ fn deps_sibling_shadow_of_bare_import_is_unresolved_not_local() {
             ("numpy".to_string(), "external".to_string()),
         ],
         "shadowed bare import must not be local: {value}"
+    );
+}
+
+#[test]
+fn deps_degenerate_dir_sibling_shadow_is_unresolved_not_local() {
+    // No `.git` anywhere above the analyzed file: the fallback project root
+    // equals the file's own directory, so a same-dir namesake (`os.py` next
+    // to `main.py`) is ambiguous, never evidence of locality. It must stay
+    // unresolved exactly like the shadow case inside a real repository.
+    let proj = tmp_dir("deps-py-shadow-degenerate");
+    std::fs::write(
+        proj.join("main.py"),
+        "import os\nimport numpy as np\nprint(os.name, np.__version__)\n",
+    )
+    .expect("write main.py");
+    std::fs::write(proj.join("os.py"), "").expect("shadow module");
+    let fixture = proj.join("main.py");
+
+    let output = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("os".to_string(), "unresolved".to_string()),
+            ("numpy".to_string(), "external".to_string()),
+        ],
+        "same-dir namesake in a degenerate dir must not be local: {value}"
+    );
+}
+
+#[test]
+fn deps_degenerate_dir_relative_import_stays_local() {
+    // Explicit relative imports are path-visible facts: they resolve from
+    // the analyzed file itself and stay local even in a degenerate tree
+    // where no `.git` ancestor turns the directory into a project.
+    let proj = tmp_dir("deps-py-degenerate-relative");
+    std::fs::write(proj.join("helper.py"), "x = 1\n").expect("write helper.py");
+    std::fs::write(proj.join("main.py"), "from .helper import x\nprint(x)\n")
+        .expect("write main.py");
+    let fixture = proj.join("main.py");
+
+    let output = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![(".helper".to_string(), "local".to_string())],
+        "explicit relative imports must stay local without a project root: {value}"
     );
 }
 
