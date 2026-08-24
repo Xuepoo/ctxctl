@@ -168,7 +168,7 @@ fn tool_definitions() -> Value {
         ),
         (
             "ctxctl_deps",
-            "Import/module dependency graph of a file; each import is classified local, external, or ignored.",
+            "Import/module dependency graph of a file; each import is classified local, external, ignored, or unresolved.",
             json!({ "file": string_desc("Path of the source file") }),
             vec!["file"],
         ),

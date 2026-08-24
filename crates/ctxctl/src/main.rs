@@ -956,6 +956,7 @@ fn dep_kind_name(kind: deps::DepKind) -> &'static str {
         deps::DepKind::Local => "local",
         deps::DepKind::External => "external",
         deps::DepKind::Ignored => "ignored",
+        deps::DepKind::Unresolved => "unresolved",
     }
 }
 

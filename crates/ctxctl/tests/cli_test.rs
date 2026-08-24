@@ -349,15 +349,21 @@ fn java_outline_symbol_and_deps_local_probe() {
     assert_eq!(sym.status.code(), Some(0), "stderr: {}", stderr(&sym));
     assert!(stdout(&sym).contains("Math.sqrt"));
 
-    // com.example.util.Helper resolves to a local package dir under the cwd.
-    let dir = tmp_dir("java-local-probe");
-    std::fs::create_dir_all(dir.join("com/example/util")).expect("create dirs");
+    // com.example.util.Helper resolves under the analyzed file's project
+    // root (anchored probe), independent of the process cwd.
+    let proj = tmp_dir("java-local-probe");
+    std::fs::copy(JAVA_FIXTURE, proj.join("Sample.java")).expect("copy fixture");
+    std::fs::create_dir_all(proj.join("com/example/util")).expect("create dirs");
     std::fs::write(
-        dir.join("com/example/util/Helper.java"),
+        proj.join("com/example/util/Helper.java"),
         "package com.example.util;\n",
     )
     .expect("write file");
-    let deps = run_in(&dir, &["deps", "--json", JAVA_FIXTURE]);
+    let fixture = proj.join("Sample.java");
+    let deps = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
     let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
     let imports: Vec<(String, String)> = value["imports"]
         .as_array()
@@ -791,15 +797,20 @@ fn symbol_subrange_out_of_bounds_exits_2() {
 
 #[test]
 fn csharp_deps_local_probe() {
-    // Demo.Utils resolves to a local package dir under the cwd.
-    let dir = tmp_dir("csharp-local-probe");
-    std::fs::create_dir_all(dir.join("Demo/Utils")).expect("create dirs");
+    // Demo.Utils resolves under the analyzed file's project root, not the cwd.
+    let proj = tmp_dir("csharp-local-probe");
+    std::fs::copy(DEPS_CS, proj.join("Deps.cs")).expect("copy fixture");
+    std::fs::create_dir_all(proj.join("Demo/Utils")).expect("create dirs");
     std::fs::write(
-        dir.join("Demo/Utils/Helper.cs"),
+        proj.join("Demo/Utils/Helper.cs"),
         "namespace Demo.Utils { }\n",
     )
     .expect("write");
-    let deps = run_in(&dir, &["deps", "--json", DEPS_CS]);
+    let fixture = proj.join("Deps.cs");
+    let deps = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
     let value: Value = serde_json::from_str(&stdout(&deps)).expect("valid json");
     let imports: Vec<(String, String)> = value["imports"]
         .as_array()
@@ -1561,13 +1572,31 @@ fn deps_python_relative_imports_honor_ignore() {
 }
 
 #[test]
-fn deps_go_local_via_cwd_existence_probe() {
-    let dir = tmp_dir("deps-go-local");
-    std::fs::create_dir_all(dir.join("localpkg/helper")).expect("create dir");
-    std::fs::write(dir.join("localpkg/helper/help.go"), "package helper\n").expect("write file");
-    let output = run_in(&dir, &["deps", "--json", DEPS_GO]);
-    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
-    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+fn deps_go_local_via_project_root_probe() {
+    let proj = tmp_dir("deps-go-local");
+    std::fs::create_dir_all(proj.join("localpkg/helper")).expect("create dir");
+    std::fs::write(proj.join("localpkg/helper/help.go"), "package helper\n").expect("write file");
+    // The analyzed file lives inside the project so the probe anchors at the
+    // file's project root, never at the cwd.
+    let source = std::fs::read_to_string(DEPS_GO).expect("read go fixture");
+    std::fs::write(proj.join("main.go"), source).expect("write main.go");
+    let fixture = proj.join("main.go");
+    let arg = fixture.to_str().unwrap();
+    // Same file + same tree must yield an identical graph from any cwd.
+    let in_tree = run_in(&proj, &["deps", "--json", arg]);
+    assert_eq!(
+        in_tree.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&in_tree)
+    );
+    let elsewhere = run_in(std::env::temp_dir().as_path(), &["deps", "--json", arg]);
+    assert_eq!(
+        stdout(&in_tree),
+        stdout(&elsewhere),
+        "graph must not depend on the cwd"
+    );
+    let value: Value = serde_json::from_str(&stdout(&in_tree)).expect("valid json");
     let imports: Vec<(String, String)> = value["imports"]
         .as_array()
         .unwrap()
@@ -1633,17 +1662,19 @@ fn deps_unsupported_extension_exits_2() {
 #[test]
 fn deps_slash_ignore_pattern_matches_relative_import() {
     // `src/vendor/*` must match a relative import resolved inside the file's
-    // directory even though the fixture path is absolute.
+    // directory. A `.git` marker anchors the project root, so matching works
+    // from any cwd (glob scoping uses the project-relative path).
     let root = tmp_dir("deps-slash-ignore");
     let vendor = root.join("proj/src/vendor");
     std::fs::create_dir_all(&vendor).expect("create dirs");
     let fixture = vendor.join("mod.ts");
     std::fs::write(&fixture, "import { helper } from \"./helper\";\n").expect("write fixture");
+    std::fs::create_dir_all(root.join("proj/.git")).expect("create git marker");
     let config = root.join("config.toml");
     std::fs::write(&config, "[paths]\nignore = [\"src/vendor/*\"]\n").expect("write config");
 
     let output = run_in(
-        &root.join("proj"),
+        &root,
         &[
             "deps",
             "--json",
@@ -1796,6 +1827,65 @@ fn character_device_arg_is_rejected_as_not_a_regular_file() {
 }
 
 #[test]
+fn deps_graph_identical_from_two_working_directories() {
+    // Byte-stability contract: same file + same tree => same graph from any
+    // cwd. Existence probes must anchor at the file's project root, never
+    // at the process working directory.
+    let proj = tmp_dir("deps-cwd-stability");
+    std::fs::create_dir_all(proj.join(".git")).expect("git marker");
+    std::fs::create_dir_all(proj.join("src")).expect("src");
+    std::fs::write(
+        proj.join("src/main.go"),
+        "package main\n\nimport (\n\t\"fmt\"\n\t\"localpkg/helper\"\n)\n\nfunc main() {\n\tfmt.Println(helper.Help())\n}\n",
+    )
+    .expect("write main.go");
+    std::fs::create_dir_all(proj.join("localpkg/helper")).expect("create pkg");
+    std::fs::write(proj.join("localpkg/helper/help.go"), "package helper\n")
+        .expect("write help.go");
+    let arg = proj.join("src/main.go").to_str().unwrap().to_string();
+
+    let in_tree = run_in(&proj, &["deps", "--json", &arg]);
+    assert_eq!(
+        in_tree.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&in_tree)
+    );
+    let elsewhere = run_in(std::env::temp_dir().as_path(), &["deps", "--json", &arg]);
+    assert_eq!(
+        elsewhere.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&elsewhere)
+    );
+    assert_eq!(
+        stdout(&in_tree),
+        stdout(&elsewhere),
+        "graph must not depend on the cwd"
+    );
+
+    let value: Value = serde_json::from_str(&stdout(&in_tree)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("fmt".to_string(), "external".to_string()),
+            ("localpkg/helper".to_string(), "local".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn oversized_file_error_states_size_and_limit() {
     let dir = tmp_dir("guardrail-size");
     let file = dir.join("big.rs");
@@ -1833,6 +1923,49 @@ fn symlink_to_regular_source_is_accepted() {
 }
 
 #[test]
+fn deps_sibling_shadow_of_bare_import_is_unresolved_not_local() {
+    // `import os` with an os.py sitting next to the analyzed file is
+    // ambiguous (stdlib shadowing); it must classify as unresolved rather
+    // than guessed local. A genuinely absent target stays external.
+    let proj = tmp_dir("deps-py-shadow");
+    std::fs::create_dir_all(proj.join(".git")).expect("git marker");
+    std::fs::create_dir_all(proj.join("app")).expect("app dir");
+    std::fs::write(
+        proj.join("app/main.py"),
+        "import os\nimport numpy as np\nprint(os.name, np.__version__)\n",
+    )
+    .expect("write main.py");
+    std::fs::write(proj.join("app/os.py"), "").expect("shadow module");
+    let fixture = proj.join("app/main.py");
+
+    let output = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports: Vec<(String, String)> = value["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["target"].as_str().unwrap().to_string(),
+                i["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            ("os".to_string(), "unresolved".to_string()),
+            ("numpy".to_string(), "external".to_string()),
+        ],
+        "shadowed bare import must not be local: {value}"
+    );
+}
+
+#[test]
 fn small_file_stays_under_configured_limit() {
     let dir = tmp_dir("guardrail-ok");
     let config = dir.join("config.toml");
@@ -1840,4 +1973,35 @@ fn small_file_stays_under_configured_limit() {
     let output = run(&["outline", "--config", config.to_str().unwrap(), FIXTURE]);
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     assert!(stdout(&output).contains("symbols"));
+}
+
+#[test]
+fn deps_default_ignore_globs_do_not_taint_ancestor_dirs() {
+    // The file sits under an ancestor directory literally named `target`;
+    // default ignore globs match the project-relative import path only, so
+    // its own relative imports must stay local.
+    let outer = tmp_dir("deps-ancestor-taint");
+    let app = outer.join("artifacts/target/website");
+    std::fs::create_dir_all(&app).expect("create dirs");
+    std::fs::write(app.join("util.ts"), "export const x = 1;\n").expect("write util");
+    std::fs::write(
+        app.join("app.ts"),
+        "import { x } from \"./util\";\nconsole.log(x);\n",
+    )
+    .expect("write app.ts");
+    let fixture = app.join("app.ts");
+
+    let output = run_in(
+        std::env::temp_dir().as_path(),
+        &["deps", "--json", fixture.to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    let imports = value["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0]["target"], "./util");
+    assert_eq!(
+        imports[0]["kind"], "local",
+        "ancestor named target must not taint the import: {value}"
+    );
 }
