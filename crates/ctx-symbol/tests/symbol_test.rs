@@ -1493,3 +1493,52 @@ table.form {
         assert!(compact.trim_end().ends_with('}'), "closer kept: {compact}");
     }
 }
+
+#[test]
+fn compact_output_is_byte_stable_across_invocations() {
+    // Byte-stability is sacred: the same input parsed twice must yield the
+    // exact same compact bytes for every symbol, on every path (AST-anchored
+    // brace fold, indentation fold, line-heuristic macro fold).
+    let cases: &[(&'static Path, &str)] = &[
+        (
+            c_path(),
+            "#define LOG(t) \\\n    log_write(t)\nint add(int a, int b) {\n    int r = a + b;\n    return r;\n}\ntypedef struct Point {\n    int x;\n    int y;\n} Point;\n",
+        ),
+        (
+            py_path(),
+            "class Point:\n    def norm(self):\n        x = self.x\n        y = self.y\n        return x * x + y * y\n",
+        ),
+        (
+            go_path(),
+            "type Point struct {\n\tx int\n\ty int\n}\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n",
+        ),
+        (
+            css_path(),
+            "table.form {\n    border: 1px solid #333;\n    padding: 2px;\n}\n",
+        ),
+        (
+            rust_path(),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    let r = a + b;\n    r\n}\n",
+        ),
+    ];
+    for (path, src) in cases {
+        let first = {
+            let parsed = ctx_symbol::parse(path, src).unwrap();
+            let symbols = ctx_symbol::extract_symbols(&parsed);
+            symbols
+                .iter()
+                .map(|s| ctx_symbol::compact_symbol(&parsed, s))
+                .collect::<Vec<_>>()
+        };
+        assert!(!first.is_empty(), "no symbols for {path:?}");
+        let second = {
+            let parsed = ctx_symbol::parse(path, src).unwrap();
+            let symbols = ctx_symbol::extract_symbols(&parsed);
+            symbols
+                .iter()
+                .map(|s| ctx_symbol::compact_symbol(&parsed, s))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first, second, "compact bytes must be stable for {path:?}");
+    }
+}
