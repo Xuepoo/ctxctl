@@ -714,8 +714,16 @@ fn run_exec(
             group(stats.compressed_tokens),
         ));
     }
+    // Over-broad-keep notice routing: text mode keeps stdout pure machine
+    // data and warns on stderr (like outline's parse-failure warning); JSON
+    // carries it as a `warning` payload field; the MCP collector has no
+    // stderr channel to the agent, so there it stays in-band.
     if let Some(warning) = &ineffective_warning {
-        out.push_str(&format!("warning: {warning}\n"));
+        if ctx.collect.is_some() {
+            out.push_str(&format!("warning: {warning}\n"));
+        } else {
+            eprintln!("warning: {warning}");
+        }
     }
     ctx.captured_exit = Some(code as u8);
     deliver(&out, ctx)?;

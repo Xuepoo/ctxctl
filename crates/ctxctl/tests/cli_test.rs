@@ -1048,6 +1048,71 @@ fn exec_merges_stderr_without_blank_line_gap() {
 }
 
 #[test]
+fn exec_keeps_rustc_location_after_error_header() {
+    // rustc prints `   --> file:line:col` right under each diagnostic;
+    // compression must not drop it or wedge an omit marker between.
+    let mut cmd = String::from("printf '");
+    for i in 1..=10 {
+        cmd.push_str(&format!("compiling {i}\\n"));
+    }
+    cmd.push_str("error[E0308]: mismatched types\\n");
+    cmd.push_str("   --> src/foo.rs:12:5\\n");
+    for i in 1..=12 {
+        cmd.push_str(&format!("more output {i}\\n"));
+    }
+    cmd.push('\'');
+    let output = run(&["exec", &cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let text = body(&output);
+    assert!(
+        text.contains("error[E0308]: mismatched types\n   --> src/foo.rs:12:5"),
+        "header and location must stay adjacent: {text}"
+    );
+    assert!(text.contains("... [5 lines omitted]"), "folds: {text}");
+}
+
+#[test]
+fn exec_ineffective_keep_warns_on_stderr_not_stdout() {
+    // A pattern matching nearly every line defeats compression; the CLI
+    // surfaces that on stderr while stdout stays pure machine data.
+    let cmd = printf_lines(25, "filler", "");
+    let output = run(&["exec", "--keep", "l", &cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("keep patterns matched most of the output"),
+        "warning on stderr: {:?}",
+        stderr(&output)
+    );
+    assert!(
+        !stdout(&output).contains("warning:"),
+        "stdout must stay clean: {}",
+        stdout(&output)
+    );
+    assert!(
+        body(&output).contains("Saved ~"),
+        "metrics unaffected by the warning"
+    );
+}
+
+#[test]
+fn exec_json_surfaces_ineffective_warning_in_payload() {
+    // JSON consumers read the warning from the envelope field; stdout stays
+    // parseable and free of raw notice text.
+    let cmd = printf_lines(25, "filler", "");
+    let output = run(&["exec", "--json", "--keep", "l", &cmd]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).expect("valid json");
+    assert!(
+        value["warning"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("keep patterns matched most of the output"),
+        "warning field: {value}"
+    );
+    assert!(value["compressed"].as_str().is_some());
+}
+
+#[test]
 fn no_saved_suppresses_metrics() {
     let outline = run(&["outline", "--no-saved", FIXTURE]);
     assert!(!stdout(&outline).contains("saved"));

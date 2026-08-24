@@ -376,6 +376,47 @@ fn location_lines_kept_with_unrelated_patterns() {
     assert!(result.text.contains("--> src/only/location.rs:7:1"));
 }
 
+/// The location line renders immediately after its header — never separated
+/// by an omit marker — and the folds around the pair are unaffected.
+#[test]
+fn location_line_stays_adjacent_to_kept_header() {
+    let mut input = lines(12, "l");
+    input.push_str("\nerror[E0308]: mismatched types\n");
+    input.push_str("   --> src/foo.rs:12:5\n");
+    input.push_str(&lines(12, "m"));
+
+    let result = compress(&input, &opts()).unwrap();
+    assert!(
+        result
+            .text
+            .contains("error[E0308]: mismatched types\n   --> src/foo.rs:12:5"),
+        "header and location must be adjacent: {}",
+        result.text
+    );
+    assert_eq!(
+        result.text.matches("... [").count(),
+        2,
+        "folds around the kept pair: {}",
+        result.text
+    );
+}
+
+/// Byte stability and batch/stream parity when implicit location keeps are
+/// in play.
+#[test]
+fn location_lines_output_is_byte_stable_and_stream_identical() {
+    let mut input = lines(30, "l");
+    input.push_str("\nerror: boom\n   --> src/bar.rs:3:7\n");
+    input.push_str(&lines(30, "m"));
+    let a = compress(&input, &opts()).unwrap();
+    let b = compress(&input, &opts()).unwrap();
+    assert_eq!(a.text, b.text);
+    assert_eq!(a.stats, b.stats);
+    let streamed = stream_bytes(input.as_bytes(), &opts());
+    assert_eq!(streamed.text, a.text);
+    assert_eq!(streamed.stats, a.stats);
+}
+
 // --- Over-broad keep detection (CTX-0024) ----------------------------------
 
 /// A keep pattern that matches nearly every line defeats compression; the
