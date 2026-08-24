@@ -1037,6 +1037,26 @@ fn exec_invalid_keep_pattern_fails() {
 }
 
 #[test]
+fn exec_empty_keep_pattern_fails_without_spawning() {
+    let dir = tmp_dir("exec-empty-keep");
+    let probe = dir.join("probe");
+    let cmd = format!("sh -c 'sleep 1; printf x > {}'", probe.display());
+    let output = run(&["exec", "--keep", "", &cmd]);
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("empty"),
+        "stderr must name the problem: {}",
+        stderr(&output)
+    );
+    // Validation happens before spawn, so nothing can have written the
+    // probe; poll past the child's own sleep to catch a detached process.
+    for _ in 0..30 {
+        assert!(!probe.exists(), "command ran despite invalid --keep");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn exec_rejects_unquoted_metacharacters() {
     let output = run(&["exec", "true && echo hi"]);
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));

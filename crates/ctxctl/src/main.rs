@@ -648,6 +648,23 @@ fn run_exec(
     if words.is_empty() {
         return Err(ExitError::new(1, "empty command"));
     }
+    // Build and validate compression options BEFORE spawning so an invalid
+    // --keep pattern aborts without leaving a detached child running.
+    let mut options = ctx_exec::CompressOptions {
+        keep_patterns: config.exec.keep.clone(),
+        head_lines: config.exec.head_lines,
+        tail_lines: config.exec.tail_lines,
+        collapse_threshold: config.exec.collapse_threshold,
+    };
+    options.keep_patterns.extend(keep.iter().cloned());
+    if let Some(head) = head {
+        options.head_lines = head;
+    }
+    if let Some(tail) = tail {
+        options.tail_lines = tail;
+    }
+    let mut compressor =
+        ctx_exec::StreamCompressor::new(&options).map_err(|e| ExitError::new(1, e.to_string()))?;
     // Spawn with piped streams: stdout is compressed incrementally (bounded
     // memory even for huge outputs) while stderr drains on a thread to avoid
     // pipe-buffer deadlocks. The merge order stays stdout-then-stderr
@@ -662,28 +679,12 @@ fn run_exec(
     let stdout_pipe = child.stdout.take().expect("stdout was configured as piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr was configured as piped");
 
-    let mut options = ctx_exec::CompressOptions {
-        keep_patterns: config.exec.keep.clone(),
-        head_lines: config.exec.head_lines,
-        tail_lines: config.exec.tail_lines,
-        collapse_threshold: config.exec.collapse_threshold,
-    };
-    options.keep_patterns.extend(keep.iter().cloned());
-    if let Some(head) = head {
-        options.head_lines = head;
-    }
-    if let Some(tail) = tail {
-        options.tail_lines = tail;
-    }
-
     let stderr_handle = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = std::io::Read::read_to_end(&mut stderr_pipe, &mut buf);
         buf
     });
 
-    let mut compressor =
-        ctx_exec::StreamCompressor::new(&options).map_err(|e| ExitError::new(1, e.to_string()))?;
     let mut stdout_reader = std::io::BufReader::new(stdout_pipe);
     let mut stdout_empty = true;
     let mut stdout_ends_with_nl = false;
