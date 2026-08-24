@@ -234,9 +234,10 @@ struct OutputCtx<'a> {
     show_saved: bool,
     output: Option<&'a Path>,
     collect: Option<&'a mut String>,
-    /// Set by `run_exec`: the child's exit code, so embedders (the MCP
-    /// server) can surface failure without parsing rendered output.
-    captured_exit: Option<u8>,
+    /// Set when a tool finishes with partial output plus a caveat (e.g.
+    /// outline's parse-failure note); embedders (the MCP server) attach it
+    /// to the non-zero-exit error result.
+    diagnostic: Option<String>,
 }
 
 fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
@@ -246,7 +247,7 @@ fn run(cli: &Cli) -> Result<ExitCode, ExitError> {
         show_saved: config.general.show_saved && !cli.no_saved,
         output: cli.output.as_deref(),
         collect: None,
-        captured_exit: None,
+        diagnostic: None,
     };
     match &cli.command {
         Command::Outline {
@@ -323,6 +324,13 @@ fn run_outline(
     // syntax".
     let parse_errors = ctx_symbol::parse_error_count(&parsed);
     let parse_failed = parse_errors > 0;
+    if parse_failed {
+        // The MCP collector has no stderr channel; carry the note so the
+        // server can attach it to the non-zero-exit error result.
+        ctx.diagnostic = Some(format!(
+            "tree-sitter reported {parse_errors} syntax error node(s); symbol list may be incomplete"
+        ));
+    }
 
     if ctx.format == Format::Json {
         let entries: Vec<serde_json::Value> = symbols
@@ -744,7 +752,6 @@ fn run_exec(
         if let Some(warning) = &ineffective_warning {
             payload["warning"] = json!(warning);
         }
-        ctx.captured_exit = Some(code as u8);
         deliver(&format!("{payload}\n"), ctx)?;
         return Ok(ExitCode::from(code as u8));
     }
@@ -773,7 +780,6 @@ fn run_exec(
             eprintln!("warning: {warning}");
         }
     }
-    ctx.captured_exit = Some(code as u8);
     deliver(&out, ctx)?;
     Ok(ExitCode::from(code as u8))
 }
