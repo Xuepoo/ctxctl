@@ -214,48 +214,165 @@ fn opt_int(description: &str) -> Value {
     json!({ "type": "integer", "description": description })
 }
 
+// --- Argument validation -----------------------------------------------------
+
+/// Expected shape of one tool argument, mirroring the advertised
+/// inputSchema so mismatches are rejected instead of silently coerced.
+#[derive(Clone, Copy)]
+enum ArgKind {
+    Str,
+    Bool,
+    Int,
+    StrList,
+}
+
+impl ArgKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Str => "a string",
+            Self::Bool => "a boolean",
+            Self::Int => "an integer",
+            Self::StrList => "an array of strings",
+        }
+    }
+
+    fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::Str => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            // Integers only: a string or float `head` must not fall back to
+            // the config default unnoticed.
+            Self::Int => value.is_u64(),
+            Self::StrList => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+        }
+    }
+}
+
+const OUTLINE_ARGS: &[(&str, ArgKind)] = &[
+    ("file", ArgKind::Str),
+    ("no_doc", ArgKind::Bool),
+    ("no_lines", ArgKind::Bool),
+];
+const SYMBOL_ARGS: &[(&str, ArgKind)] = &[
+    ("file", ArgKind::Str),
+    ("name", ArgKind::Str),
+    ("kind", ArgKind::Str),
+    ("signature", ArgKind::Bool),
+    ("compact", ArgKind::Bool),
+    ("lines", ArgKind::Str),
+];
+const READ_ARGS: &[(&str, ArgKind)] = &[("file", ArgKind::Str), ("lines", ArgKind::Str)];
+const DEPS_ARGS: &[(&str, ArgKind)] = &[("file", ArgKind::Str)];
+const EXEC_ARGS: &[(&str, ArgKind)] = &[
+    ("cmd", ArgKind::Str),
+    ("keep", ArgKind::StrList),
+    ("head", ArgKind::Int),
+    ("tail", ArgKind::Int),
+];
+
+fn arg_schema(tool: &str) -> Option<&'static [(&'static str, ArgKind)]> {
+    match tool {
+        "ctxctl_outline" => Some(OUTLINE_ARGS),
+        "ctxctl_symbol" => Some(SYMBOL_ARGS),
+        "ctxctl_read" => Some(READ_ARGS),
+        "ctxctl_deps" => Some(DEPS_ARGS),
+        "ctxctl_exec" => Some(EXEC_ARGS),
+        _ => None,
+    }
+}
+
+/// Check arguments against the advertised schema before dispatch: unknown
+/// keys and mistyped values are rejected naming the offending argument
+/// instead of being coerced or defaulted. Required-key presence and
+/// emptiness stay with the handlers (`require_str`). Explicit `null`
+/// counts as absent — clients omit optional fields that way.
+fn validate_arguments(tool: &str, args: &Value) -> Result<(), String> {
+    let Some(schema) = arg_schema(tool) else {
+        return Ok(()); // unknown tools are rejected by `run_tool`
+    };
+    let object = args
+        .as_object()
+        .ok_or_else(|| "arguments must be an object".to_string())?;
+    for key in object.keys() {
+        if !schema.iter().any(|(known, _)| *known == key.as_str()) {
+            return Err(format!("unknown argument: {key}"));
+        }
+    }
+    for (key, kind) in schema {
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
+        if !value.is_null() && !kind.accepts(value) {
+            return Err(format!("argument `{key}` must be {}", kind.label()));
+        }
+    }
+    Ok(())
+}
+
 // --- Tool dispatch ----------------------------------------------------------
 
 /// Execute one `tools/call`. Errors become `isError` results (never JSON-RPC
 /// errors): a failing tool call is still a valid conversation event for the
 /// agent.
 fn call_tool(name: &str, arguments: Option<&Value>, config: &Config) -> Result<String, String> {
-    let args = arguments.cloned().unwrap_or_else(|| json!({}));
+    let args = arguments
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    validate_arguments(name, &args)?;
     let mut out = String::new();
-    // Scope the context so the collector's borrow of `out` ends before the
-    // rendered text is inspected below.
-    let captured_exit = {
+    let (status, diagnostic) = {
         let mut ctx = OutputCtx {
             format: Format::Text,
             show_saved: config.general.show_saved,
             output: None,
             collect: Some(&mut out),
-            captured_exit: None,
+            diagnostic: None,
         };
-        run_tool(name, &args, &mut ctx, config)?
+        let status = run_tool(name, &args, &mut ctx, config)?;
+        (status, ctx.diagnostic.clone())
     };
     if out.is_empty() {
         return Err("tool produced no output".to_string());
     }
     // The CLI conveys failure through the process exit status; MCP has no
-    // channel for it, so non-zero exec codes are prefixed into the text.
-    if name == "ctxctl_exec"
-        && let Some(code) = captured_exit
-        && code != 0
-    {
-        return Ok(format!("exit code {code}\n{out}"));
+    // channel for it, so any non-zero status becomes an isError result that
+    // names the tool and code, carries the diagnostic (e.g. outline's
+    // parse-error note), and keeps the partial payload below it — remote
+    // agents can react without parsing rendered output.
+    if let Some(code) = status {
+        let mut message = format!("tool {name} failed with exit code {code}");
+        if let Some(detail) = diagnostic {
+            message.push_str(": ");
+            message.push_str(&detail);
+        }
+        message.push('\n');
+        message.push_str(&out);
+        return Err(message);
     }
     Ok(out)
 }
 
-/// Dispatch one tool invocation and render its payload into `ctx`.
+/// Numeric status behind an `ExitCode` (`None` = success). `ExitCode::to_u8`
+/// is still unstable, so match against reconstructed candidates; every code
+/// the CLI produces comes from a `u8`.
+fn exit_status(code: &ExitCode) -> Option<u8> {
+    (1..=u8::MAX).find(|&candidate| ExitCode::from(candidate) == *code)
+}
+
+/// Dispatch one tool invocation and render its payload into `ctx`, returning
+/// its exit status (`None` on success). Non-zero codes mean partial results:
+/// parse failures exit 3 with whatever tree-sitter recovered, child commands
+/// propagate their exit code through `run_exec`.
 fn run_tool(
     name: &str,
     args: &Value,
     ctx: &mut OutputCtx<'_>,
     config: &Config,
 ) -> Result<Option<u8>, String> {
-    match name {
+    let code = match name {
         "ctxctl_outline" => {
             let file = require_path(args, "file")?;
             crate::run_outline(&file, flag(args, "no_doc"), flag(args, "no_lines"), ctx, config)
@@ -298,7 +415,8 @@ fn run_tool(
                 .map(|items| {
                     items
                         .iter()
-                        .map(|v| v.as_str().unwrap_or_default().to_string())
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -309,7 +427,7 @@ fn run_tool(
         other => return Err(format!("unknown tool: {other}")),
     }
     .map_err(|e| e.message)?;
-    Ok(ctx.captured_exit)
+    Ok(exit_status(&code))
 }
 
 fn require_path(args: &Value, key: &str) -> Result<PathBuf, String> {
@@ -475,15 +593,21 @@ mod tests {
     }
 
     #[test]
-    fn exec_tool_prefixes_nonzero_exit_code() {
+    fn exec_nonzero_exit_becomes_is_error_result() {
         let msg = request(
             "tools/call",
             json!({ "name": "ctxctl_exec", "arguments": { "cmd": "false" } }),
         );
         let response = handle(&msg, &test_config()).expect("a response");
+        assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"]
             .as_str()
             .expect("text content");
-        assert!(text.starts_with("exit code 1\n"), "{text}");
+        // The text names the tool and exit code; the compressed output
+        // follows so no signal is lost.
+        assert!(
+            text.starts_with("tool ctxctl_exec failed with exit code 1\n"),
+            "{text}"
+        );
     }
 }
